@@ -4,7 +4,6 @@ import logging
 import argparse
 import torch
 from model import *
-from model.metric import *
 from model.loss import *
 from logger import Logger
 from trainer import *
@@ -17,6 +16,7 @@ import pickle
 import warnings
 from utils.saliency import SimpleFullGradMod
 from utils.debug_graph import GraphChecker
+import numpy as np
 
 def update_status(name,message):
     try:

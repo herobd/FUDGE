@@ -1,4 +1,6 @@
-# Pairing project
+# Visual FUDGE: Form Understanding via Dynamic Graph Editing
+
+Todo self.useCurvedBBs needs removed
 
 This code is free to use for non-commericial purposes. Contact me if commericialization is desired.
 

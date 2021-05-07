@@ -11,8 +11,6 @@ from utils.group_pairing import getGTGroup, pure, purity
 from datasets.testforms_graph_pair import display
 import random, os, math
 
-from model.oversegment_loss import build_oversegmented_targets_multiscale
-from model.overseg_box_detector import build_box_predictions
 try:
     from model.optimize import optimizeRelationships, optimizeRelationshipsSoft
 except:
@@ -677,9 +675,7 @@ class GraphPairTrainer(BaseTrainer):
                 #what I want:
                 # alignment from pred to target (-1 if none), each GT has only one pred
                 # targIndex = alginment from pred to target (-1 if none) based on IO_clippedU thresh, not class
-                if self.model_ref.useCurvedBBs:
-                    targIndex = newGetTargIndexForPreds_textLines(targetBoxes[0],outputBoxes,self.gt_bb_align_IOcU_thresh,numClasses,True,self.picky_merging and not merge_only)
-                elif self.model_ref.rotation:
+                if self.model_ref.rotation:
                     assert(False and 'untested and should be changed to reflect new newGetTargIndexForPreds_s')
                     targIndex, fullHit, overSegmented = newGetTargIndexForPreds_dist(targetBoxes[0],outputBoxes,1.1,numClasses,hard_thresh=False)
                 else:
@@ -1582,9 +1578,7 @@ class GraphPairTrainer(BaseTrainer):
                 target_for_b = targetBoxes[0]
             else:
                 target_for_b = torch.empty(0)
-            if self.model_ref.useCurvedBBs:
-                ap_5, prec_5, recall_5, allPrec, allRecall =AP_textLines(target_for_b,outputBoxes,0.5,numClasses)
-            elif self.model_ref.rotation:
+            if self.model_ref.rotation:
                 ap_5, prec_5, recall_5, allPrec, allRecall =AP_dist(target_for_b,outputBoxes,0.9,numClasses)
             else:
                 ap_5, prec_5, recall_5, allPrec, allRecall =AP_iou(target_for_b,outputBoxes,0.5,numClasses)
@@ -1664,91 +1658,18 @@ class GraphPairTrainer(BaseTrainer):
             numBBTypes = self.model_ref.numBBTypes
             if 'word_bbs' in useGT: #useOnlyGTSpace and self.use_word_bbs_gt:
                 word_boxes = instance['form_metadata']['word_boxes'][None,:,:,].to(targetBoxes.device) #I can change this as it isn't used later
-                if self.model_ref.useCurvedBBs:
-                    x1 = word_boxes[:,:,0]-word_boxes[:,:,4]
-                    x2 = word_boxes[:,:,0]+word_boxes[:,:,4]
-                    y1 = word_boxes[:,:,1]-word_boxes[:,:,3]
-                    y2 = word_boxes[:,:,1]+word_boxes[:,:,3]
-                    r = word_boxes[:,:,2]
-                    targetBoxes_changed = torch.stack((x1,y1,x2,y2,r),dim=2) #leave out class information
-                    if self.model.training:
-                        targetBoxes_changed[:,:,0] += torch.randn_like(targetBoxes_changed[:,:,0])
-                        targetBoxes_changed[:,:,1] += torch.randn_like(targetBoxes_changed[:,:,1])
-                        targetBoxes_changed[:,:,2] += torch.randn_like(targetBoxes_changed[:,:,2])
-                        targetBoxes_changed[:,:,3] += torch.randn_like(targetBoxes_changed[:,:,2])
-                else:
-                    targetBoxes_changed=word_boxes
-                    if self.model.training:
-                        targetBoxes_changed[:,:,0] += torch.randn_like(targetBoxes_changed[:,:,0])
-                        targetBoxes_changed[:,:,1] += torch.randn_like(targetBoxes_changed[:,:,1])
-                        if self.model_ref.rotation:
-                            targetBoxes_changed[:,:,2] += torch.randn_like(targetBoxes_changed[:,:,2])*0.01
-                        targetBoxes_changed[:,:,3] += torch.randn_like(targetBoxes_changed[:,:,3])
-                        targetBoxes_changed[:,:,4] += torch.randn_like(targetBoxes_changed[:,:,4])
-                        targetBoxes_changed[:,:,3][targetBoxes_changed[:,:,3]<1]=1
-                        targetBoxes_changed[:,:,4][targetBoxes_changed[:,:,4]<1]=1
-
-            elif self.model_ref.useCurvedBBs and targetBoxes is not None:# and 'only_space' not in useGT:#not useOnlyGTSpace:
-                #build targets of GT to pass as detections
-                ph_boxes = [torch.zeros(1,1,1,1,1)]*3
-                ph_cls = [torch.zeros(1,1,1,1,1)]*3
-                ph_conf = [torch.zeros(1,1,1,1)]*3
-                scale = self.model_ref.detector.scale
-                numAnchors = self.model_ref.detector.numAnchors
-                numBBParams = self.model_ref.detector.numBBParams
-                numBBParams = self.model_ref.detector.numBBParams
-                grid_sizesH=[image.size(2)//s[0] for s in scale]
-                grid_sizesW=[image.size(3)//s[0] for s in scale]
-
-
-                nGT, masks, conf_masks, t_Ls, t_Ts, t_Rs, t_Bs, t_rs, tconf_scales, tcls_scales, pred_covered, gt_covered, recall, precision, pred_covered_noclass, gt_covered_noclass, recall_noclass, precision_noclass = build_oversegmented_targets_multiscale(ph_boxes, ph_conf, ph_cls, targetBoxes, [targetBoxes.size(1)], numBBTypes, grid_sizesH, grid_sizesW,scale=scale, assign_mode='split', close_anchor_rule='unmask')
-                
-                for i in range(len(t_Ls)):
-                    assert((t_Ls[i]<=t_Rs[i]).all() and (t_Ts[i]<=t_Bs[i]).all())
-
-                #add some jitter
+                targetBoxes_changed=word_boxes
                 if self.model.training:
-                    t_Ls = [t.type(torch.FloatTensor) + torch.FloatTensor(t.size()).normal_() for t in t_Ls]
-                    t_Ts = [t.type(torch.FloatTensor) + torch.FloatTensor(t.size()).normal_() for t in t_Ts]
-                    t_Rs = [t.type(torch.FloatTensor) + torch.FloatTensor(t.size()).normal_() for t in t_Rs]
-                    t_Bs = [t.type(torch.FloatTensor) + torch.FloatTensor(t.size()).normal_() for t in t_Bs]
-                    t_rs = [t.type(torch.FloatTensor) + torch.FloatTensor(t.size()).normal_(std=0.01) for t in t_rs]
-                    #fix bad BBs introduced by jitter
-                    for t_l,t_r,t_t,t_b in zip(t_Ls,t_Rs,t_Ts,t_Bs):
-                        t_l[t_l>=t_r]+=1
-                        t_t[t_t>=t_b]+=1
+                    targetBoxes_changed[:,:,0] += torch.randn_like(targetBoxes_changed[:,:,0])
+                    targetBoxes_changed[:,:,1] += torch.randn_like(targetBoxes_changed[:,:,1])
+                    if self.model_ref.rotation:
+                        targetBoxes_changed[:,:,2] += torch.randn_like(targetBoxes_changed[:,:,2])*0.01
+                    targetBoxes_changed[:,:,3] += torch.randn_like(targetBoxes_changed[:,:,3])
+                    targetBoxes_changed[:,:,4] += torch.randn_like(targetBoxes_changed[:,:,4])
+                    targetBoxes_changed[:,:,3][targetBoxes_changed[:,:,3]<1]=1
+                    targetBoxes_changed[:,:,4][targetBoxes_changed[:,:,4]<1]=1
 
-                tconf_scales = [t.type(torch.FloatTensor) for t in tconf_scales]
-                tcls_scales = [t.type(torch.FloatTensor) for t in tcls_scales]
 
-                ys = []
-                for level in range(len(t_Ls)):
-                    level_y = torch.cat([ torch.stack([2*tconf_scales[level]-1,t_Ls[level],t_Ts[level],t_Rs[level], t_Bs[level],t_rs[level]],dim=2), 2*tcls_scales[level].permute(0,1,4,2,3)-1], dim=2)
-                    ###
-                    #for r in range(level_y.size(3)):
-                    #    for c in range(level_y.size(4)):
-                    #        for bo in range(level_y.size(1)):
-                    #            conf = level_y[0,bo,0,r,c]
-                    #            x = level_y[0,bo,1,r,c]
-                    #            y = level_y[0,bo,2,r,c]
-                    #            if x<46 and x<95 and y>102 and y<130 and conf>0.5:
-                    #                print('{} level_y[0,{},:,{},{}] = {}'.format(level,bo,r,c,level_y[0,bo,:,r,c]))
-                    ys.append(level_y.view(level_y.size(0),level_y.size(1)*level_y.size(2),level_y.size(3),level_y.size(4)))
-                targetBoxes_changed = build_box_predictions(ys,scale,ys[0].device,numAnchors,numBBParams,numBBTypes)
-                #only take good predictions
-                targetBoxes_changed = targetBoxes_changed[:,targetBoxes_changed[0,:,0]>0.5]
-
-                #remove conf and class information
-                targetBoxes_changed = targetBoxes_changed[:,:,1:6]
-
-            #elif self.model_ref.useCurvedBBs and 'only_space' in useGT: #useOnlyGTSpace:
-            #    #convert target boxes to x1y1x2y2r, as that's what TextLine expects
-            #    x1 = targetBoxes[:,:,0]-targetBoxes[:,:,4]
-            #    x2 = targetBoxes[:,:,0]+targetBoxes[:,:,4]
-            #    y1 = targetBoxes[:,:,1]-targetBoxes[:,:,3]
-            #    y2 = targetBoxes[:,:,1]+targetBoxes[:,:,3]
-            #    r = targetBoxes[:,:,2]
-            #    targetBoxes_changed = torch.stack((x1,y1,x2,y2,r),dim=2) #leave out class information
             elif targetBoxes is not None:
                 targetBoxes_changed=targetBoxes.clone()
                 if self.model.training:
@@ -1764,7 +1685,7 @@ class GraphPairTrainer(BaseTrainer):
             else:
                 targetBoxes_changed = None
 
-            if 'only_space' in useGT and not self.model_ref.useCurvedBBs and targetBoxes_changed is not None:
+            if 'only_space' in useGT and targetBoxes_changed is not None:
                 targetBoxes_changed[:,:,5:]=0 #zero out other information to ensure results aren't contaminated
                 #useCurved doesnt include class
 
@@ -2050,7 +1971,7 @@ class GraphPairTrainer(BaseTrainer):
                             targetBoxes,
                             self.classMap,
                             path,
-                            useTextLines=self.model_ref.useCurvedBBs,
+                            useTextLines=False,
                             targetGroups=instance['gt_groups'],
                             targetPairs=instance['gt_groups_adj'])
                     print('saved {}'.format(path))
@@ -2068,9 +1989,7 @@ class GraphPairTrainer(BaseTrainer):
                         target_for_b = targetBoxes[0].cpu()
                     else:
                         target_for_b = torch.empty(0)
-                    if self.model_ref.useCurvedBBs:
-                        ap_5, prec_5, recall_5, allPrec, allRecall =AP_textLines(target_for_b,outputBoxes,0.5,numClasses)
-                    elif self.model_ref.rotation:
+                    if self.model_ref.rotation:
                         ap_5, prec_5, recall_5 =AP_dist(target_for_b,outputBoxes,0.9,numClasses)
                     else:
                         ap_5, prec_5, recall_5, allPrec, allRecall =AP_iou(target_for_b,outputBoxes,0.5,numClasses)
@@ -2282,7 +2201,7 @@ class GraphPairTrainer(BaseTrainer):
                         self.classMap,
                         path,
                         bbTrans=finalBBTrans,
-                        useTextLines=self.model_ref.useCurvedBBs,
+                        useTextLines=False,
                         targetGroups=instance['gt_groups'],
                         targetPairs=instance['gt_groups_adj'])
                 #print('saved {}'.format(path))
@@ -2420,13 +2339,8 @@ class GraphPairTrainer(BaseTrainer):
                     newToOldGTGroups = list(range(len(gtGroups)))
 
             if outputBoxes is not None and len(outputBoxes)>0:
-                if self.model_ref.useCurvedBBs:
-                    outputBoxesNotBlanks=torch.FloatTensor([box.getCls() for box in outputBoxes])
-                    outputBoxesNotBlanks=outputBoxesNotBlanks[:,blank_index-13]<0.5
-                    outputBoxes = [box for i,box in enumerate(outputBoxes) if outputBoxesNotBlanks[i]]
-                else:
-                    outputBoxesNotBlanks=outputBoxes[:,1+blank_index-8]<0.5
-                    outputBoxes = outputBoxes[outputBoxesNotBlanks]
+                outputBoxesNotBlanks=outputBoxes[:,1+blank_index-8]<0.5
+                outputBoxes = outputBoxes[outputBoxesNotBlanks]
                 newToOldOutputBoxes = torch.arange(0,len(outputBoxesNotBlanks),dtype=torch.int64)[outputBoxesNotBlanks]
                 oldToNewOutputBoxes = {o.item():n for n,o in enumerate(newToOldOutputBoxes)}
                 if predGroups is not None:
@@ -2453,9 +2367,7 @@ class GraphPairTrainer(BaseTrainer):
 
         if targetBoxes is not None:
             targetBoxes = targetBoxes.cpu()
-            if self.model_ref.useCurvedBBs:
-                targIndex = newGetTargIndexForPreds_textLines(targetBoxes[0],outputBoxes,bb_iou_thresh,numClasses,False)
-            elif self.model_ref.rotation:
+            if self.model_ref.rotation:
                 raise NotImplementedError('newGetTargIndexForPreds_dist should be modified to reflect the behavoir or newGetTargIndexForPreds_textLines')
                 targIndex, fullHit, overSegmented = newGetTargIndexForPreds_dist(targetBoxes[0],outputBoxes,1.1,numClasses,hard_thresh=False)
             else:
@@ -2475,9 +2387,7 @@ class GraphPairTrainer(BaseTrainer):
             target_for_b = targetBoxes[0].cpu()
         else:
             target_for_b = torch.empty(0)
-        if self.model_ref.useCurvedBBs:
-            ap_5, prec_5, recall_5, allPrec, allRecall =AP_textLines(target_for_b,outputBoxes,bb_iou_thresh,numClasses)
-        elif self.model_ref.rotation:
+        if self.model_ref.rotation:
             ap_5, prec_5, recall_5, allPrec, allRecall =AP_dist(target_for_b,outputBoxes,0.9,numClasses)
         else:
             ap_5, prec_5, recall_5, allPrec, allRecall =AP_iou(target_for_b,outputBoxes,bb_iou_thresh,numClasses)
@@ -2745,13 +2655,8 @@ class GraphPairTrainer(BaseTrainer):
                 oldToNewGroups = {o:n for n,o in enumerate(newToOldGroups)}
                 gtGroupAdj = [(oldToNewGroups[g1],oldToNewGroups[g2]) for g1,g2 in gtGroupAdj if g1 in oldToNewGroups and g2 in oldToNewGroups]
             if finalOutputBoxes is not None and len(finalOutputBoxes)>0:
-                if self.model_ref.useCurvedBBs:
-                    finalOutputBoxesNotBlanks=torch.FloatTensor([box.getCls() for box in finalOutputBoxes])
-                    finalOutputBoxesNotBlanks=finalOutputBoxesNotBlanks[:,blank_index-13]<0.5
-                    finalOutputBoxes = [box for i,box in enumerate(finalOutputBoxes) if finalOutputBoxesNotBlanks[i]]
-                else:
-                    finalOutputBoxesNotBlanks=finalOutputBoxes[:,1+blank_index-8]<0.5
-                    finalOutputBoxes = finalOutputBoxes[finalOutputBoxesNotBlanks]
+                finalOutputBoxesNotBlanks=finalOutputBoxes[:,1+blank_index-8]<0.5
+                finalOutputBoxes = finalOutputBoxes[finalOutputBoxesNotBlanks]
                 newToOldOutputBoxes = torch.arange(0,len(finalOutputBoxesNotBlanks),dtype=torch.int64)[finalOutputBoxesNotBlanks]
                 oldToNewOutputBoxes = {o.item():n for n,o in enumerate(newToOldOutputBoxes)}
                 
@@ -2821,9 +2726,7 @@ class GraphPairTrainer(BaseTrainer):
         allGroupScores=[]
         num_giter = len(allOutputBoxes)
         for graphIteration,(outputBoxes,edgePred,nodePred,edgeIndexes,predGroups) in enumerate(zip(allOutputBoxes,allEdgePred,allNodePred,allEdgeIndexes,allPredGroups)):
-            if self.model_ref.useCurvedBBs:
-                targIndex = newGetTargIndexForPreds_textLines(targetBoxes.cpu(),outputBoxes,self.gt_bb_align_IOcU_thresh,numClasses,True,self.picky_merging and (graphIteration>0 or not self.model.merge_first))
-            elif self.model_ref.rotation:
+            if self.model_ref.rotation:
                 assert(False and 'untested and should be changed to reflect new newGetTargIndexForPreds_s')
                 targIndex, fullHit, overSegmented = newGetTargIndexForPreds_dist(targetBoxes,outputBoxes,1.1,numClasses,hard_thresh=False)
             else:
@@ -2867,10 +2770,7 @@ class GraphPairTrainer(BaseTrainer):
             allGroupScores.append(groupScores)
 
         #final, we'll count it as additional graph iteration
-        if self.model_ref.useCurvedBBs:
-            targIndex = newGetTargIndexForPreds_textLines(targetBoxes.cpu(),finalOutputBoxes,0.5,numClasses,False)
-            noClassTargIndex = newGetTargIndexForPreds_textLines(targetBoxes.cpu(),finalOutputBoxes,0.5,0,False)
-        elif self.model_ref.rotation:
+        if self.model_ref.rotation:
             assert(False and 'untested and should be changed to reflect new newGetTargIndexForPreds_s')
             targIndex, fullHit, overSegmented = newGetTargIndexForPreds_dist(targetBoxes,outputBoxes,1.1,numClasses,hard_thresh=False)
         else:
@@ -2880,17 +2780,12 @@ class GraphPairTrainer(BaseTrainer):
         noClassTargIndex = noClassTargIndex.numpy()
 
         #cacluate which pred bbs are close to eachother (for density measurement)
-        if self.model_ref.useCurvedBBs:
-            bb_centers = np.array([bb.getCenterPoint() for bb in finalOutputBoxes])
-            bb_lefts = np.array([bb.pairPoints()[0] for bb in finalOutputBoxes]).mean(axis=1)
-            bb_rights = np.array([bb.pairPoints()[1] for bb in finalOutputBoxes]).mean(axis=1)
-        else:
-            bb_centers = finalOutputBoxes[:,1:3]
-            assert(not self.model_ref.rotation)
-            bb_lefts = bb_centers.clone()
-            bb_lefts[:,0]-=finalOutputBoxes[:,5]
-            bb_rights = bb_centers.clone()
-            bb_rights[:,0]+=finalOutputBoxes[:,5]
+        bb_centers = finalOutputBoxes[:,1:3]
+        assert(not self.model_ref.rotation)
+        bb_lefts = bb_centers.clone()
+        bb_lefts[:,0]-=finalOutputBoxes[:,5]
+        bb_rights = bb_centers.clone()
+        bb_rights[:,0]+=finalOutputBoxes[:,5]
             
         dist_center_center = np.power(np.power(bb_centers[None,:,:]-bb_centers[:,None,:],2).sum(axis=2),0.5)
         dist_center_left = np.power(np.power(bb_centers[None,:,:]-bb_lefts[:,None,:],2).sum(axis=2),0.5)
@@ -2952,17 +2847,11 @@ class GraphPairTrainer(BaseTrainer):
         unmatched_finals=[]
         last_used=[False]*len(allOutputBoxes[-1])
         for finalI, bbF in enumerate(finalOutputBoxes):
-            if self.model_ref.useCurvedBBs:
-                ppF = bbF.polyPoints()
-            else:
-                ppF = bbF[1:6]
+            ppF = bbF[1:6]
             match_found=False
             for lastI, bbL in enumerate(allOutputBoxes[-1]):
                 
-                if self.model_ref.useCurvedBBs:
-                    ppL = bbL.polyPoints()
-                else:
-                    ppL = bbL[1:6]
+                ppL = bbL[1:6]
                 if len(ppF)==len(ppL):
                     max_diff = np.abs(ppF-ppL).max()
                     if max_diff<0.01:
@@ -2978,20 +2867,13 @@ class GraphPairTrainer(BaseTrainer):
             best_diff=99999999
             best_lastI=None
             bbF = finalOutputBoxes[finalI]
-            if self.model_ref.useCurvedBBs:
-                ppF = bbF.polyPoints()
-            else:
-                ppF = bbF[1:6]
+            ppF = bbF[1:6]
             match_found=False
             for lastI, bbL in enumerate(allOutputBoxes[-1]):
                 if not last_used[lastI]:
                     
-                    if self.model_ref.useCurvedBBs:
-                        ppL = bbL.polyPoints()
-                        diff = np.abs(ppF.mean(axis=0)-ppL.mean(axis=0)).sum()
-                    else:
-                        ppL = bbL[1:6]
-                        diff = p.abs(ppF-ppL).sum()
+                    ppL = bbL[1:6]
+                    diff = p.abs(ppF-ppL).sum()
 
                     if diff<best_diff:
                         best_diff=diff
@@ -3028,12 +2910,8 @@ class GraphPairTrainer(BaseTrainer):
                 is_false_pos=True
 
             #is this relationship consistent with classes
-            if self.model_ref.useCurvedBBs:
-                classIdx1 = finalOutputBoxes[finalPredGroups[n1][0]].getCls()[:numClasses].argmax()
-                classIdx2 = finalOutputBoxes[finalPredGroups[n2][0]].getCls()[:numClasses].argmax()
-            else:
-                classIdx1 = finalOutputBoxes[finalPredGroups[n1][0],6:7+numClasses].argmax()
-                classIdx2 = finalOutputBoxes[finalPredGroups[n2][0],6:7+numClasses].argmax()
+            classIdx1 = finalOutputBoxes[finalPredGroups[n1][0],6:7+numClasses].argmax()
+            classIdx2 = finalOutputBoxes[finalPredGroups[n2][0],6:7+numClasses].argmax()
             tClass = min(classIdx1,classIdx2)
             bClass = max(classIdx1,classIdx2)
             is_consistent=True

@@ -21,7 +21,6 @@ import torch.nn.functional as F
 import math
 import json
 from .net_builder import make_layers
-from model.simpleNN import SimpleNN
 
 #This assumes the classification of edges was done by the pairing_graph modules featurizer
 
