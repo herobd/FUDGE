@@ -12,7 +12,6 @@ from model.metric import *
 from data_loader import getDataLoader
 from trainer import *
 from logger import Logger
-import requests, socket
 import warnings
 
 import torch.distributed as dist
@@ -20,12 +19,7 @@ import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel
 
 
-try: 
-    from knockknock import slack_sender
-    with open('knock.knock') as f:
-        webhook_url = f.read().strip()
-except:
-    webhook_url = None
+webhook_url = None
 
 
 

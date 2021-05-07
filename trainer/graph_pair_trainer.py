@@ -39,31 +39,6 @@ def maxRelScoreIsHit(child_groups,parent_groups,edgeIndexes,edgePred):
                     max_score_is_hit = False
     return max_score_is_hit
 
-def _check_bn_apply(module, flag):
-    if issubclass(module.__class__, torch.nn.modules.batchnorm._BatchNorm):
-        flag[0] = True
-
-
-def _check_bn(model):
-    flag = [False]
-    model.apply(lambda module: _check_bn_apply(module, flag))
-    return flag[0]
-
-
-def _reset_bn(module):
-    if issubclass(module.__class__, torch.nn.modules.batchnorm._BatchNorm):
-        module.running_mean = torch.zeros_like(module.running_mean)
-        module.running_var = torch.ones_like(module.running_var)
-
-
-def _get_momenta(module, momenta):
-    if issubclass(module.__class__, torch.nn.modules.batchnorm._BatchNorm):
-        momenta[module] = module.momentum
-
-
-def _set_momenta(module, momenta):
-    if issubclass(module.__class__, torch.nn.modules.batchnorm._BatchNorm):
-        module.momentum = momenta[module]
 
 class GraphPairTrainer(BaseTrainer):
     """
@@ -88,21 +63,10 @@ class GraphPairTrainer(BaseTrainer):
                     rotation=self.model_ref.rotation, 
                     scale=self.model_ref.scale,
                     anchors=self.model_ref.anchors)
-        elif 'overseg' in self.loss:
-            self.loss['overseg'] = self.loss['overseg'](**self.loss_params['overseg'],
-                    num_classes=self.model_ref.numBBTypes,
-                    rotation=self.model_ref.rotation,
-                    scale=self.model_ref.scale,
-                    anchors=self.model_ref.anchors)
         self.batch_size = data_loader.batch_size
         self.data_loader = data_loader
         self.data_loader_iter = iter(data_loader)
-        #for i in range(self.start_iteration,
         self.valid_data_loader = valid_data_loader
-        #self.valid = True if self.valid_data_loader is not None else False
-        #self.log_step = int(np.sqrt(self.batch_size))
-        #lr schedule from "Attention is all you need"
-        #base_lr=config['optimizer']['lr']
 
 
         self.mergeAndGroup = config['trainer']['mergeAndGroup']
@@ -182,7 +146,7 @@ class GraphPairTrainer(BaseTrainer):
         self.remove_same_pairs = False if 'remove_same_pairs' not in config else config['remove_same_pairs']
         self.optimize = False if 'optimize' not in config else config['optimize']
 
-        #t#self.opt_history = defaultdict(list)#t#
+        
         self.do_characterization = config['characterization'] if 'characterization' in config else False
         if self.do_characterization:
             self.characterization_sum=defaultdict(int)
@@ -238,7 +202,6 @@ class GraphPairTrainer(BaseTrainer):
             return ret
         else:
             return False
-    #NEW
     def _train_iteration(self, iteration):
         """
         Training logic for an iteration
@@ -258,10 +221,8 @@ class GraphPairTrainer(BaseTrainer):
         if self.unfreeze_detector is not None and iteration>=self.unfreeze_detector:
             self.model_ref.unfreeze()
         self.model.train()
-        #self.model.eval()
-        #print("WARNING EVAL")
 
-        #t#ticAll=timeit.default_timer()#t##t#
+        
         batch_idx = (iteration-1) % len(self.data_loader)
         try:
             thisInstance = self.data_loader_iter.next()
@@ -270,61 +231,37 @@ class GraphPairTrainer(BaseTrainer):
             thisInstance = self.data_loader_iter.next()
         if not self.model_ref.detector_predNumNeighbors:
             thisInstance['num_neighbors']=None
-        ##toc=timeit.default_timer()
-        #t#self.opt_history['get data'].append(timeit.default_timer()-ticAll)#t#
         
-        #t#tic=timeit.default_timer()#t##t#
+        
+        
         if self.accum_grad_steps<2 or iteration%self.accum_grad_steps==1:
+            #only zero if not accumulating or just did upate
             self.optimizer.zero_grad()
 
-        ##toc=timeit.default_timer()
-        ##print('for: '+str(toc-tic))
-        #loss = self.loss(output, target)
         index=0
         losses={}
-        #t###tic=timeit.default_timer()#t#
+        
 
-        #if self.iteration % self.save_step == 0:
-        #    targetPoints={}
-        #    targetPixels=None
-        #    _,lossC=FormsBoxPair_printer(None,thisInstance,self.model,self.gpu,self._eval_metrics,self.checkpoint_dir,self.iteration,self.loss['box'])
-        #    loss, position_loss, conf_loss, class_loss, recall, precision = lossC
-        #else:
         if self.conf_thresh_change_iters > iteration:
             threshIntur = 1 - iteration/self.conf_thresh_change_iters
         else:
             threshIntur = None
         useGT = self.useGT(iteration)
-        #if self.bothGT and useGT and random.random()<0.9:
-        #    useOnlyGTSpace = True
-        #    useGT = False
-        #else:
-        #    useOnlyGTSpace = False
-        #useOnlyGTSpace = self.useGT(iteration)
-        #useGT = False
 
-        #print('\t\t\t\t{} {}'.format(iteration,thisInstance['imgName']))
         if self.amp:
             with torch.cuda.amp.autocast():
-                if self.mergeAndGroup:
-                    losses, run_log, out = self.newRun(thisInstance,useGT,threshIntur)
-                else:
-                    useGT = useOnlyGTSpace
-                    losses, run_log, out = self.run(thisInstance,useGT,threshIntur)
-        else:
-            if self.mergeAndGroup:
                 losses, run_log, out = self.newRun(thisInstance,useGT,threshIntur)
-            else:
-                useGT = useOnlyGTSpace
-                losses, run_log, out = self.run(thisInstance,useGT,threshIntur)
-        #t#self.opt_history['full run'].append(timeit.default_timer()-tic)#t#
+        else:
+            losses, run_log, out = self.newRun(thisInstance,useGT,threshIntur)
+        
 
-        #t#tic=timeit.default_timer()#t##t#
+        
         loss=0
         for name in losses.keys():
             losses[name] *= self.lossWeights[name[:-4]]
             loss += losses[name]
             losses[name] = losses[name].item()
+            
         if len(losses)>0:
             assert not torch.isnan(loss)
             if self.accum_grad_steps>1:
@@ -344,6 +281,7 @@ class GraphPairTrainer(BaseTrainer):
             assert not torch.isnan(m.grad.data).any()
         if count!=0:
             meangrad/=count
+
         if self.accum_grad_steps<2 or iteration%self.accum_grad_steps==0:
             torch.nn.utils.clip_grad_value_(self.model.parameters(),1)
             if self.amp:
@@ -351,27 +289,17 @@ class GraphPairTrainer(BaseTrainer):
                 self.scaler.update()
             else:
                 self.optimizer.step()
-        #t#self.opt_history['backprop'].append(timeit.default_timer()-tic)#t#
+        
         if len(losses)>0:
             loss = loss.item()
-        #print('loss:{}, mean grad:{}'.format(loss,meangrad))
         log = {
             'mean grad': meangrad,
             'loss': loss,
             **losses,
-            #'edgePredLens':np.array([numEdgePred,numBoxPred,numEdgePred+numBoxPred,-1],dtype=np.float),
             
             **run_log
-
         }
-        #t#self.opt_history['Full iteration'].append(timeit.default_timer()-ticAll)#t#
-        #t#for name,times in self.opt_history.items():#t#
-            #t#print('time {}({}): {}'.format(name,len(times),np.mean(times)))#t#
-            #t#if len(times)>300: #t#
-                #t#times.pop(0)#t#
-                #t#if len(times)>600:#t#
-                    #t#times.pop(0)#t#
-        #t#print('--------------------------')#t#
+        
         return log
 
     def _minor_log(self, log):
@@ -386,7 +314,6 @@ class GraphPairTrainer(BaseTrainer):
             ls+=this_data
             this_len=len(this_data)
             if i%2==0 and this_len>0:
-                #ls+='\t\t'
                 ls+=' '*(20-this_len)
             else:
                 ls+='\n      '
@@ -404,7 +331,7 @@ class GraphPairTrainer(BaseTrainer):
         """
         self.model.eval()
 
-        val_metrics = {}#defaultdict(lambda: 0.0)
+        val_metrics = {}
         val_count = defaultdict(lambda: 1)
 
         useGT = self.useGT(self.iteration,True) if self.valid_with_gt else False
@@ -442,192 +369,30 @@ class GraphPairTrainer(BaseTrainer):
 
 
 
-                #total_val_metrics += self._eval_metrics(output, target)
-
         for val_name in val_metrics:
             if val_count[val_name]>0:
-                val_metrics[val_name] =  val_count[val_name]/val_count[val_name]
+                val_metrics[val_name] =  val_metrics[val_name]/val_count[val_name]
         return val_metrics
 
-    def alignEdgePred(self,targetBoxes,adj,outputBoxes,relPred,relIndexes,rel_prop_pred):
-        if relPred is None or targetBoxes is None:
-            if targetBoxes is None:
-                if relPred is not None and (relPred>self.thresh_rel).any():
-                    prec=0
-                    ap=0
-                else:
-                    prec=1
-                    ap=1
-                recall=1
-                targIndex = -torch.ones(outputBoxes.size(0)).int()
-            elif relPred is None:
-                if targetBoxes is not None:
-                    recall=0
-                    ap=0
-                else:
-                    recall=1
-                    ap=1
-                prec=1
-                targIndex = None
+    #This aligns the predicted boxes to the target ones, figures out the labels for edges
+    def simplerAlignEdgePred(self,
+            targetBoxes,
+            targetIndexToGroup,
+            gtGroupAdj,
+            outputBoxes, #detector predictions (but the class is updated from node predictions)
+            edgePred, #graph edge predictions
+            edgePredIndexes, #node (group) indexes for edges
+            predGroups, #outputBoxes indexes for each node
+            rel_prop_pred, #the proposal prediction
+            thresh_edge,
+            thresh_rel,
+            thresh_overSeg,
+            thresh_group,
+            thresh_error,
+            merge_only=False):
 
-            return torch.tensor([]),torch.tensor([]),recall,prec,prec,ap, targIndex, torch.ones(outputBoxes.size(0)), None, recall, prec
-        targetBoxes = targetBoxes.cpu()
-        #decide which predicted boxes belong to which target boxes
-        #should this be the same as AP_?
-        numClasses = 2
-
-        if self.model_ref.rotation:
-            targIndex, fullHit = getTargIndexForPreds_dist(targetBoxes[0],outputBoxes,1.1,numClasses,hard_thresh=False)
-        else:
-            targIndex, fullHit = getTargIndexForPreds_iou(targetBoxes[0],outputBoxes,0.4,numClasses,hard_thresh=False,fixed=self.fixedAlign)
-        #else:
-        #    if self.model_ref.rotation:
-        #        targIndex, predsWithNoIntersection = getTargIndexForPreds_dist(targetBoxes[0],outputBoxes,1.1,numClasses)
-        #    else:
-        #        targIndex, predsWithNoIntersection = getTargIndexForPreds_iou(targetBoxes[0],outputBoxes,0.4,numClasses)
-
-        #Create gt vector to match relPred.values()
-
-        rels = relIndexes #relPred._indices().cpu()
-        predsAll = relPred #relPred._values()
-        sigPredsAll = torch.sigmoid(predsAll[:,-1])
-        predsPos = []
-        predsNeg = []
-        scores = []
-        matches=0
-        truePred=falsePred=badPred=0
-        for i,(n0,n1) in enumerate(rels):
-            t0 = targIndex[n0].item()
-            t1 = targIndex[n1].item()
-            if t0>=0 and t1>=0:
-                if (min(t0,t1),max(t0,t1)) in adj:
-                    #if self.useBadBBPredForRelLoss!='fixed' or (fullHit[n0] and fullHit[n1]):
-                    if fullHit[n0] and fullHit[n1]:
-                        matches+=1
-                        predsPos.append(predsAll[i])
-                        scores.append( (sigPredsAll[i],True) )
-                        if sigPredsAll[i]>self.thresh_rel:
-                            truePred+=1
-                    else:
-                        scores.append( (sigPredsAll[i],False) ) #for the sake of scoring, this is a bad relationship
-                else:
-                    predsNeg.append(predsAll[i])
-                    scores.append( (sigPredsAll[i],False) )
-                    if sigPredsAll[i]>self.thresh_rel:
-                        falsePred+=1
-
-            else:
-                #if self.useBadBBPredForRelLoss=='fixed' or (self.useBadBBPredForRelLoss and (predsWithNoIntersection[n0] or predsWithNoIntersection[n1])):
-                if self.useBadBBPredForRelLoss:
-                    if self.useBadBBPredForRelLoss=='full' or np.random.rand()<self.useBadBBPredForRelLoss:
-                        predsNeg.append(predsAll[i])
-                scores.append( (sigPredsAll[i],False) )
-                if sigPredsAll[i]>self.thresh_rel:
-                    badPred+=1
-        #Add score 0 for instances we didn't predict
-        for i in range(len(adj)-matches):
-            scores.append( (float('nan'),True) )
-        if len(adj)>0:
-            final_prop_rel_recall = matches/len(adj)
-        else:
-            final_prop_rel_recall = 1
-        if len(rels)>0:
-            final_prop_rel_prec = matches/len(rels)
-        else:
-            final_prop_rel_prec = 1
-    
-        if len(predsPos)>0:
-            predsPos = torch.stack(predsPos).to(relPred.device)
-        else:
-            predsPos = None
-        if len(predsNeg)>0:
-            predsNeg = torch.stack(predsNeg).to(relPred.device)
-        else:
-            predsNeg = None
-
-        if len(adj)>0:
-            recall = truePred/len(adj)
-        else:
-            recall = 1
-        if falsePred>0:
-            prec = truePred/(truePred+falsePred)
-        else:
-            prec = 1
-        if falsePred+badPred>0:
-            fullPrec = truePred/(truePred+falsePred+badPred)
-        else:
-            fullPrec = 1
-
-
-        if rel_prop_pred is not None:
-            relPropScores,relPropIds, threshPropRel = rel_prop_pred
-            truePropPred=falsePropPred=badPropPred=0
-            propPredsPos=[]
-            propPredsNeg=[]
-            for i,(n0,n1) in enumerate(relPropIds):
-                t0 = targIndex[n0].item()
-                t1 = targIndex[n1].item()
-                if t0>=0 and t1>=0:
-                    if (min(t0,t1),max(t0,t1)) in adj:
-                        #if self.useBadBBPredForRelLoss!='fixed' or (fullHit[n0] and fullHit[n1]):
-                        if fullHit[n0] and fullHit[n1]:
-                            #matches+=1
-                            propPredsPos.append(relPropScores[i])
-                            #scores.append( (sigPredsAll[i],True) )
-                            if relPropScores[i]>threshPropRel:
-                                truePropPred+=1
-                        #else:
-                        #    scores.append( (sigPredsAll[i],False) ) #for the sake of scoring, this is a bad relationship
-                    else:
-                        propPredsNeg.append(relPropScores[i])
-                        #scores.append( (sigPredsAll[i],False) )
-                        if relPropScores[i]>threshPropRel:
-                            falsePropPred+=1
-                else:
-                    if self.useBadBBPredForRelLoss:
-                        if self.useBadBBPredForRelLoss=='full' or np.random.rand()<self.useBadBBPredForRelLoss:
-                            propPredsNeg.append(relPropScores[i])
-                    #scores.append( (sigPredsAll[i],False) )
-                    if relPropScores[i]>threshPropRel:
-                        badPropPred+=1
-            #Add score 0 for instances we didn't predict
-            #for i in range(len(adj)-matches):
-            #    scores.append( (float('nan'),True) )
-        
-            if len(propPredsPos)>0:
-                propPredsPos = torch.stack(propPredsPos).to(relPred.device)
-            else:
-                propPredsPos = None
-            if len(propPredsNeg)>0:
-                propPredsNeg = torch.stack(propPredsNeg).to(relPred.device)
-            else:
-                propPredsNeg = None
-
-            if len(adj)>0:
-                propRecall = truePropPred/len(adj)
-            else:
-                propRecall = 1
-            #if falsePropPred>0:
-            #    propPrec = truePropPred/(truePropPred+falsePropPred)
-            #else:
-            #    propPrec = 1
-            if falsePropPred+badPropPred>0:
-                propFullPrec = truePropPred/(truePropPred+falsePropPred+badPropPred)
-            else:
-                propFullPrec = 1
-
-            proposedInfo = (propPredsPos,propPredsNeg, propRecall, propFullPrec)
-        else:
-            proposedInfo = None
-
-
-        return predsPos,predsNeg, recall, prec ,fullPrec, computeAP(scores), targIndex, fullHit, proposedInfo, final_prop_rel_recall, final_prop_rel_prec
-
-
-
-    def simplerAlignEdgePred(self,targetBoxes,targetIndexToGroup,gtGroupAdj,outputBoxes,edgePred,edgePredIndexes,predGroups,rel_prop_pred,thresh_edge,thresh_rel,thresh_overSeg,thresh_group,thresh_error,merge_only=False):
         assert(self.useBadBBPredForRelLoss=='full' or self.useBadBBPredForRelLoss==1)
-        if edgePred is None:
+        if edgePred is None: #no predicted graph
             if targetBoxes is None:
                 prec=1
                 ap=1
@@ -668,28 +433,27 @@ class GraphPairTrainer(BaseTrainer):
             #should this be the same as AP_?
             numClasses = self.model_ref.numBBTypes
 
-            #t#tic=timeit.default_timer()#t##t#
+            
             
             if targetBoxes is not None:
                 targetBoxes = targetBoxes.cpu()
-                #what I want:
-                # alignment from pred to target (-1 if none), each GT has only one pred
-                # targIndex = alginment from pred to target (-1 if none) based on IO_clippedU thresh, not class
                 if self.model_ref.rotation:
                     assert(False and 'untested and should be changed to reflect new newGetTargIndexForPreds_s')
                     targIndex, fullHit, overSegmented = newGetTargIndexForPreds_dist(targetBoxes[0],outputBoxes,1.1,numClasses,hard_thresh=False)
                 else:
+                    #this performs the pred to target bounding box alignment
+                    #it does it with a special iou that allows the pedicition to be smaller horizontally
                     targIndex = newGetTargIndexForPreds_iou(targetBoxes[0],outputBoxes,0.4,numClasses,True)
                 targIndex = targIndex.numpy()
             else:
                 #targIndex=torch.LongTensor(len(outputBoxes)).fill_(-1)
                 targIndex = [-1]*len(outputBoxes)
             
-            #t#self.opt_history['simplerAlign newGetTargIndexForPreds'].append(timeit.default_timer()-tic)#t#
-            #t#tic=timeit.default_timer()#t##t#
+            
+            
 
-            #Create gt vector to match edgePred.values()
-            num_internal_iters = edgePred.size(-2)
+            #Create gt vector to match edgePred
+            #the MetaGraph was coded to allow in internal recursive loop like the Universal Transformer.
             predsEdge = edgePred[...,0] 
             assert(not torch.isnan(predsEdge).any())
             predsGTEdge = []
@@ -697,6 +461,7 @@ class GraphPairTrainer(BaseTrainer):
             truePosEdge=falsePosEdge=trueNegEdge=falseNegEdge=0
             saveEdgePred={}
             if not merge_only:
+                #get predictions into  names
                 if not self.model_ref.legacy:
                     predsRel = edgePred[...,1] 
                     predsOverSeg = edgePred[...,2] 
@@ -728,18 +493,17 @@ class GraphPairTrainer(BaseTrainer):
                 saveGroupPred={}
                 saveErrorPred={}
 
+            #get groups with the target bb indexes instead of pred bb indexes
             predGroupsT={}
             predGroupsTNear={}
             for node in range(len(predGroups)):
                 predGroupsT[node] = [targIndex[bb] for bb in predGroups[node] if targIndex[bb]>=0]
             shouldBeEdge={}
 
-            #gtGroupToPred = 
 
-            #t#self.opt_history['simplerAlign edge setup'].append(timeit.default_timer()-tic)#t#
-            #t#tic=timeit.default_timer()#t#
+            
+            
 
-            ##new vectorization
             #We only operate over the subset of nodes that have an edge
             nodeLs = [p[0] for p in edgePredIndexes]
             nodeRs = [p[1] for p in edgePredIndexes]
@@ -750,11 +514,11 @@ class GraphPairTrainer(BaseTrainer):
 
             #get information for that subset of nodes
             compute = [(
-                len(predGroupsT[n0]),
+                len(predGroupsT[n0]), #how many bbs
                 len(predGroups[n0]),
-                getGTGroup(predGroupsT[n0],targetIndexToGroup),
-                purity(predGroupsT[n0],targetIndexToGroup),
-                predGroupsT[n0][0] if len(predGroupsT[n0])>0 else -1
+                getGTGroup(predGroupsT[n0],targetIndexToGroup), #align to GT group
+                purity(predGroupsT[n0],targetIndexToGroup), #how many of the bbs are from the GT group
+                predGroupsT[n0][0] if len(predGroupsT[n0])>0 else -1 #get the "head"
                 ) for n0 in nodes_with_edges]
 
 
@@ -763,7 +527,6 @@ class GraphPairTrainer(BaseTrainer):
             #expand information into row and column matrices to allow all-to-all node comparisons
             g_target_len, g_len, GTGroups, purities, ts_0 = zip(*compute)
             gtNE = [(GTGroups[node_to_nwe_index[n0]],GTGroups[node_to_nwe_index[n1]])  for n0,n1 in edgePredIndexes]
-            #gtGroupToNWE = {gt:nwe for nwe,gt in enumerate(GTGroups)}
 
             g_target_len = torch.IntTensor(g_target_len).to(edge_loss_device)
             g_len = torch.IntTensor(g_len).to(edge_loss_device)
@@ -784,26 +547,6 @@ class GraphPairTrainer(BaseTrainer):
             GTGroups_L = GTGroups[nweLs]
             same_GTGroups = (GTGroups_R==GTGroups_L) * (GTGroups_R>=0) * (GTGroups_L>=0) #have to account for -1 being unaligned
 
-            #g_target_len_R = g_target_len[:,None].expand(len(nodes_with_edges),len(nodes_with_edges))
-            #g_target_len_C = g_target_len[None,:].expand(len(nodes_with_edges),len(nodes_with_edges))
-            #g_len_R = g_len[:,None].expand(len(nodes_with_edges),len(nodes_with_edges))
-            #g_len_C = g_len[None,:].expand(len(nodes_with_edges),len(nodes_with_edges))
-            #purity_R = purities[:,None].expand(len(nodes_with_edges),len(nodes_with_edges))
-            #purity_C = purities[None,:].expand(len(nodes_with_edges),len(nodes_with_edges))
-            #ts_0_R = ts_0[:,None].expand(len(nodes_with_edges),len(nodes_with_edges))
-            #ts_0_C = ts_0[None,:].expand(len(nodes_with_edges),len(nodes_with_edges))
-            #same_ts_0 = ts_0_R==ts_0_C
-            #GTGroups_R = GTGroups[:,None].expand(len(nodes_with_edges),len(nodes_with_edges))
-            #GTGroups_L = GTGroups[None,:].expand(len(nodes_with_edges),len(nodes_with_edges))
-            #same_GTGroups = GTGroups_R==GTGroups_L
-
-
-            ##which (of all edges) are actually ones we predicted
-            #predEdgesMat = torch.BoolTensor(len(nodes_with_edges),len(nodes_with_edges)).zero_()
-            #N0, N1 = zip(*edgePredIndexes)
-            #N0 = [node_to_nwe_index[n] for n in N0]
-            #N1 = [node_to_nwe_index[n] for n in N1]
-            #predEdgesMat[N0+N1,N1+N0]=True
 
             #which edges are GT ones
             gtNE = [(min(gtGroup0,gtGroup1),max(gtGroup0,gtGroup1)) for gtGroup0,gtGroup1 in gtNE]
@@ -842,14 +585,6 @@ class GraphPairTrainer(BaseTrainer):
                 bx_L = bx[nweLs]
                 by_R = by[nweRs]
                 by_L = by[nweLs]
-                #tx_R = tx[:,None].expand(len(nodes_with_edges),len(nodes_with_edges))
-                #tx_L = tx[None,:].expand(len(nodes_with_edges),len(nodes_with_edges))
-                #ty_R = ty[:,None].expand(len(nodes_with_edges),len(nodes_with_edges))
-                #ty_L = ty[None,:].expand(len(nodes_with_edges),len(nodes_with_edges))
-                #bx_R = bx[:,None].expand(len(nodes_with_edges),len(nodes_with_edges))
-                #bx_L = bx[None,:].expand(len(nodes_with_edges),len(nodes_with_edges))
-                #by_R = by[:,None].expand(len(nodes_with_edges),len(nodes_with_edges))
-                #by_L = by[None,:].expand(len(nodes_with_edges),len(nodes_with_edges))
 
                 #roughly see if the two polygons are overlapping
                 overlapping = ((torch.min(bx_R,bx_L)-torch.max(tx_R,tx_L))>0) * ((torch.min(by_R,by_L)-torch.max(ty_R,ty_L))>0)
@@ -1043,10 +778,10 @@ class GraphPairTrainer(BaseTrainer):
             saveEdgePredMat[UN]=saveIndex['UN']
             saveEdgePred ={i:revSaveIndex[saveEdgePredMat[i].item()] for i in range(len(edgePredIndexes)) if saveEdgePredMat[i]>0}
 
-            #t#time = timeit.default_timer()-tic#t#
-            #t#self.opt_history['simplerAlign edge loop'].append(time)#t#
-            #t#self.opt_history['simplerAlign edge loop per'].append(time/len(edgePredIndexes))#t#
-            #t#tic=timeit.default_timer()#t#
+            
+            
+            
+            
             
             if not merge_only:
                 predsGTYes = torch.cat((predsGTEdge,predsGTRel,predsGTOverSeg,predsGTGroup,predsGTError),dim=0)
@@ -1098,7 +833,7 @@ class GraphPairTrainer(BaseTrainer):
                     }
                 predTypes = [saveEdgePred,saveRelPred,saveOverSegPred,saveGroupPred,saveErrorPred]
 
-            #t#self.opt_history['simplerAlign edge resolution'].append(timeit.default_timer()-tic)#t#
+            
 
 
         if rel_prop_pred is not None:
@@ -1106,7 +841,7 @@ class GraphPairTrainer(BaseTrainer):
             relPropScores,relPropIds, threshPropRel = rel_prop_pred
 
             #print('\tcount rel prop: {}'.format(len(relPropIds)))
-            #t#tic=timeit.default_timer()#t##t#
+            
             truePropPred=falsePropPred=falseNegProp=0
             propPredsPos=[]
             propPredsNeg=[]
@@ -1157,9 +892,9 @@ class GraphPairTrainer(BaseTrainer):
                     propPredsNeg = torch.stack(propPredsNeg,dim=0)
                 else:
                     propPredsNeg=None
-                #t#time = timeit.default_timer()-tic#t##t
-                #t#self.opt_history['simplerAlign proposal'].append(time)#t#
-                #t#self.opt_history['simplerAlign proposal per edge'].append(time/len(relPropIds))#t#
+                
+                
+                
             else:
                 #vectorized, this has a lot of instances
                 isEdge = torch.BoolTensor([(targIndex[n0]==targIndex[n1] and targIndex[n0]>=0) for n0,n1 in relPropIds]).to(relPropScores.device)
@@ -1174,9 +909,9 @@ class GraphPairTrainer(BaseTrainer):
                 if len(propPredsNeg)==0:
                     propPredsNeg = None
 
-                #t#time = timeit.default_timer()-tic#t##t
-                #t#self.opt_history['simplerAlign proposal m1st'].append(time)#t#
-                #t#self.opt_history['simplerAlign proposal m1st per edge'].append(time/len(relPropIds))#t#
+                
+                
+                
 
 
         
@@ -1194,440 +929,6 @@ class GraphPairTrainer(BaseTrainer):
             proposedInfo = None
 
         return predsGTYes, predsGTNo, targIndex,  proposedInfo, log, predTypes, missed_rels
-
-
-    def prealignedEdgePred(self,adj,relPred,relIndexes,rel_prop_pred):
-        if relPred is None:
-            #assert(adj is None or len(adj)==0) this is a failure of the heuristic pairing
-            if adj is not None and len(adj)>0:
-                recall=0
-                ap=0
-            else:
-                recall=1
-                ap=1
-            prec=1
-
-            return torch.tensor([]),torch.tensor([]),recall,prec,prec,ap, None
-        rels = relIndexes #relPred._indices().cpu().t()
-        predsAll = relPred
-        sigPredsAll = torch.sigmoid(predsAll[:,-1])
-
-        #gt = torch.empty(len(rels))#rels.size(0))
-        predsPos = []
-        predsNeg = []
-        scores = []
-        truePred=falsePred=0
-        for i,(n0,n1) in enumerate(rels):
-            #n0 = rels[i,0]
-            #n1 = rels[i,1]
-            #gt[i] = int((n0,n1) in adj) #(adjM[ n0, n1 ])
-            if (n0,n1) in adj:
-                predsPos.append(predsAll[i])
-                scores.append( (sigPredsAll[i],True) )
-                if sigPredsAll[i]>self.thresh_rel:
-                    truePred+=1
-            else:
-                predsNeg.append(predsAll[i])
-                scores.append( (sigPredsAll[i],False) )
-                if sigPredsAll[i]>self.thresh_rel:
-                    falsePred+=1
-    
-        #return gt.to(relPred.device), relPred._values().view(-1).view(-1)
-        #return gt.to(relPred[1].device), relPred[1].view(-1)
-        if len(predsPos)>0:
-            predsPos = torch.stack(predsPos).to(relPred.device)
-        else:
-            predsPos = None
-        if len(predsNeg)>0:
-            predsNeg = torch.stack(predsNeg).to(relPred.device)
-        else:
-            predsNeg = None
-        if len(adj)>0:
-            recall = truePred/len(adj)
-        else:
-            recall = 1
-        if falsePred>0:
-            prec = truePred/(truePred+falsePred)
-        else:
-            prec = 1
-
-
-        if rel_prop_pred is not None:
-            relPropScores,relPropIds, threshPropRel = rel_prop_pred
-            propPredsPos = []
-            propPredsNeg = []
-            scores = []
-            truePropPred=falsePropPred=0
-            for i,(n0,n1) in enumerate(rels):
-                #n0 = rels[i,0]
-                #n1 = rels[i,1]
-                #gt[i] = int((n0,n1) in adj) #(adjM[ n0, n1 ])
-                if (n0,n1) in adj:
-                    propPredsPos.append(relPropScores[i])
-                    #scores.append( (sigPredsAll[i],True) )
-                    if relPropScores[i]>threshPropRel:
-                        truePropPred+=1
-                else:
-                    propPredsNeg.append(relPropScores[i])
-                    #scores.append( (relPropScores[i],False) )
-                    if relPropScores[i]>threshPropRel:
-                        falsePropPred+=1
-        
-            #return gt.to(relPred.device), relPred._values().view(-1).view(-1)
-            #return gt.to(relPred[1].device), relPred[1].view(-1)
-            if len(propPredsPos)>0:
-                propPredsPos = torch.stack(propPredsPos).to(relPred.device)
-            else:
-                propPredsPos = None
-            if len(propPredsNeg)>0:
-                propPredsNeg = torch.stack(propPredsNeg).to(relPred.device)
-            else:
-                propPredsNeg = None
-            if len(adj)>0:
-                propRecall = truePropPred/len(adj)
-            else:
-                propRecall = 1
-            if falsePropPred>0:
-                propPrec = truePropPred/(truePropPred+falsePropPred)
-            else:
-                propPrec = 1
-            proposedInfo = (propPredsPos,propPredsNeg, propRecall, propPrec )
-        else:
-            proposedInfo = None
-
-
-        return predsPos,predsNeg, recall, prec, prec, computeAP(scores), proposedInfo
-
-    #old
-    def run(self,instance,useGT,threshIntur=None,get=[]):
-        numClasses = self.model_ref.numBBTypes
-        if 'no_blanks' in self.config['validation'] and not self.config['data_loader']['no_blanks']:
-            numClasses-=1
-        image, targetBoxes, adj, target_num_neighbors = self._to_tensor(instance)
-        if useGT:
-            outputBoxes, outputOffsets, relPred, relIndexes, bbPred, rel_prop_pred = self.model(image,targetBoxes,target_num_neighbors,True,
-                    otherThresh=self.conf_thresh_init, otherThreshIntur=threshIntur, hard_detect_limit=self.train_hard_detect_limit)
-            #_=None
-            #gtPairing,predPairing = self.prealignedEdgePred(adj,relPred)
-            predPairingShouldBeTrue,predPairingShouldBeFalse, eRecall,ePrec,fullPrec,ap,proposedInfo = self.prealignedEdgePred(adj,relPred,relIndexes,rel_prop_pred)
-            if bbPred is not None:
-                if self.model_ref.predNN or self.model_ref.predClass:
-                    if target_num_neighbors is not None:
-                        alignedNN_use = target_num_neighbors[0]
-                    bbPredNN_use = bbPred[:,:,0]
-                    start=1
-                else:
-                    start=0
-                if self.model_ref.predClass:
-                    if targetBoxes is not None:
-                        alignedClass_use =  targetBoxes[0,:,13:13+self.model_ref.numBBTypes]
-                    bbPredClass_use = bbPred[:,:,start:start+self.model_ref.numBBTypes]
-            else:
-                bbPredNN_use=None
-                bbPredClass_use=None
-            final_prop_rel_recall = final_prop_rel_prec = None
-        else:
-            outputBoxes, outputOffsets, relPred, relIndexes, bbPred, rel_prop_pred = self.model(image,
-                    otherThresh=self.conf_thresh_init, otherThreshIntur=threshIntur, hard_detect_limit=self.train_hard_detect_limit)
-
-            if self.optimize:
-                #This changes relPred
-                self.optimizeF(relPred,relIndexes,bbPred[:,-1,0])
-
-            #gtPairing,predPairing = self.alignEdgePred(targetBoxes,adj,outputBoxes,relPred)
-            predPairingShouldBeTrue,predPairingShouldBeFalse, eRecall,ePrec,fullPrec,ap, bbAlignment, bbFullHit, proposedInfo, final_prop_rel_recall, final_prop_rel_prec = self.alignEdgePred(targetBoxes,adj,outputBoxes,relPred,relIndexes, rel_prop_pred)
-            if bbPred is not None and bbPred.size(0)>0:
-                #create aligned GT
-                #this was wrong...
-                    #first, remove unmatched predicitons that didn't overlap (weren't close) to any targets
-                    #toKeep = 1-((bbNoIntersections==1) * (bbAlignment==-1))
-                #remove predictions that overlapped with GT, but not enough
-                if self.model_ref.predNN:
-                    start=1
-                    toKeep = ~((bbFullHit==0) * (bbAlignment!=-1)) #toKeep = not (incomplete_overlap and did_overlap)
-                    if toKeep.any():
-                        bbPredNN_use = bbPred[toKeep][:,:,0]
-                        bbAlignment_use = bbAlignment[toKeep]
-                        #becuase we used -1 to indicate no match (in bbAlignment), we add 0 as the last position in the GT, as unmatched 
-                        if target_num_neighbors is not None:
-                            target_num_neighbors_use = torch.cat((target_num_neighbors[0].float(),torch.zeros(1).to(target_num_neighbors.device)),dim=0)
-                        else:
-                            target_num_neighbors_use = torch.zeros(1).to(bbPred.device)
-                        alignedNN_use = target_num_neighbors_use[bbAlignment_use.long()]
-
-                    else:
-                        bbPredNN_use=None
-                        alignedNN_use=None
-                else:
-                    start=0
-                if self.model_ref.predClass:
-                    #We really don't care about the class of non-overlapping instances
-                    if targetBoxes is not None:
-                        toKeep = bbFullHit==1
-                        if toKeep.any():
-                            bbPredClass_use = bbPred[toKeep][:,:,start:start+self.model_ref.numBBTypes]
-                            bbAlignment_use = bbAlignment[toKeep]
-                            alignedClass_use =  targetBoxes[0][bbAlignment_use.long()][:,13:13+self.model_ref.numBBTypes] #There should be no -1 indexes in hereS
-                        else:
-                            alignedClass_use = None
-                            bbPredClass_use = None
-                    else:
-                        alignedClass_use = None
-                        bbPredClass_use = None
-            else:
-                bbPredNN_use = None
-                bbPredClass_use = None
-        #if relPred is not None:
-        #    numEdgePred = relPred.size(0)
-        #    if predPairingShouldBeTrue is not None:
-        #        lenTrue = predPairingShouldBeTrue.size(0)
-        #    else:
-        #        lenTrue = 0
-        #    if predPairingShouldBeFalse is not None:
-        #        lenFalse = predPairingShouldBeFalse.size(0)
-        #    else:
-        #        lenFalse = 0
-        #else:
-        #    numEdgePred = lenTrue = lenFalse = 0
-        numBoxPred = outputBoxes.size(0)
-        #if len(predPairing.size())>0 and predPairing.size(0)>0:
-        #    relLoss = self.loss['rel'](predPairing,gtPairing)
-        #else:
-        #    relLoss = torch.tensor(0.0,requires_grad=True).to(image.device)
-        #relLoss = torch.tensor(0.0).to(image.device)
-        relLoss = None
-        #seperating the loss into true and false portions is not only convienint, it balances the loss between true/false examples
-        if predPairingShouldBeTrue is not None and predPairingShouldBeTrue.size(0)>0:
-            ones = torch.ones_like(predPairingShouldBeTrue).to(image.device)
-            relLoss = self.loss['rel'](predPairingShouldBeTrue,ones)
-            debug_avg_relTrue = predPairingShouldBeTrue.mean().item()
-        else:
-            debug_avg_relTrue =0 
-        if predPairingShouldBeFalse is not None and predPairingShouldBeFalse.size(0)>0:
-            zeros = torch.zeros_like(predPairingShouldBeFalse).to(image.device)
-            relLossFalse = self.loss['rel'](predPairingShouldBeFalse,zeros)
-            if relLoss is None:
-                relLoss=relLossFalse
-            else:
-                relLoss+=relLossFalse
-            debug_avg_relFalse = predPairingShouldBeFalse.mean().item()
-        else:
-            debug_avg_relFalse = 0
-        losses={}
-        if relLoss is not None:
-            #relLoss *= self.lossWeights['rel']
-            losses['relLoss']=relLoss
-
-        if proposedInfo is not None:
-            propPredPairingShouldBeTrue,propPredPairingShouldBeFalse= proposedInfo[0:2]
-            propRelLoss = None
-            #seperating the loss into true and false portions is not only convienint, it balances the loss between true/false examples
-            if propPredPairingShouldBeTrue is not None and propPredPairingShouldBeTrue.size(0)>0:
-                ones = torch.ones_like(propPredPairingShouldBeTrue).to(image.device)
-                propRelLoss = self.loss['propRel'](propPredPairingShouldBeTrue,ones)
-            if propPredPairingShouldBeFalse is not None and propPredPairingShouldBeFalse.size(0)>0:
-                zeros = torch.zeros_like(propPredPairingShouldBeFalse).to(image.device)
-                propRelLossFalse = self.loss['propRel'](propPredPairingShouldBeFalse,zeros)
-                if propRelLoss is None:
-                    propRelLoss=propRelLossFalse
-                else:
-                    propRelLoss+=propRelLossFalse
-            if propRelLoss is not None:
-                losses['propRelLoss']=propRelLoss
-
-
-
-        if not self.model_ref.detector_frozen:
-            if targetBoxes is not None:
-                targSize = targetBoxes.size(1)
-            else:
-                targSize =0 
-
-            if 'box' in self.loss:
-                boxLoss, position_loss, conf_loss, class_loss, nn_loss, recall, precision,recall_noclass,precision_noclass = self.loss['box'](outputOffsets,targetBoxes,[targSize],target_num_neighbors)
-                losses['boxLoss'] = boxLoss
-            else:
-                oversegLoss, position_loss, conf_loss, class_loss, rot_loss, recall, precision, gt_covered, pred_covered, recall_noclass, precision_noclass, gt_covered_noclass, pred_covered_noclass = self.loss['overseg'](outputOffsets,targetBoxes,[targSize],calc_stats='bb_stats' in get)
-                losses['oversegLoss'] = oversegLoss
-            #boxLoss *= self.lossWeights['box']
-            #if relLoss is not None:
-            #    loss = relLoss + boxLoss
-            #else:
-            #    loss = boxLoss
-        #else:
-        #    loss = relLoss
-
-
-        if self.model_ref.predNN and bbPredNN_use is not None and bbPredNN_use.size(0)>0 and 'nnFinal' in self.loss:
-            alignedNN_use = alignedNN_use[:,None] #introduce "time" dimension to broadcast
-            nn_loss_final = self.loss['nnFinal'](bbPredNN_use,alignedNN_use)
-            losses['nnFinalLoss']=nn_loss_final
-            #nn_loss_final *= self.lossWeights['nn']
-            
-            #if loss is not None:
-            #    loss += nn_loss_final
-            #else:
-            #    loss = nn_loss_final
-            #nn_loss_final = nn_loss_final.item()
-        #else:
-            #nn_loss_final=0
-
-        if self.model_ref.predClass and bbPredClass_use is not None and bbPredClass_use.size(0)>0:
-            alignedClass_use = alignedClass_use[:,None] #introduce "time" dimension to broadcast
-            class_loss_final = self.loss['classFinal'](bbPredClass_use,alignedClass_use)
-            losses['classFinalLoss'] = class_loss_final
-            #class_loss_final *= self.lossWeights['class']
-            #loss += class_loss_final
-            #class_loss_final = class_loss_final.item()
-        #else:
-            #class_loss_final = 0
-        
-        log={
-                'rel_prec': fullPrec,
-                'rel_recall': eRecall,
-                'rel_Fm': 2*(fullPrec*eRecall)/(eRecall+fullPrec) if eRecall+fullPrec>0 else 0
-                }
-
-        ######Adding "BROS" (it has single groups, so BROS doesn't actual make a difference)
-        #make pred pairs
-        outputBoxes_nn_removed = torch.cat((outputBoxes[:,:6].cpu(),outputBoxes[:,-numClasses:].cpu()),dim=1)
-        pred_to_gt = newGetTargIndexForPreds_iou(targetBoxes[0].cpu(),outputBoxes_nn_removed,self.final_bb_iou_thresh,numClasses,False)
-        #pred_to_gt2 = newGetTargIndexForPreds_iou(targetBoxes[0],outputBoxes,0.4,numClasses,False)
-        #targIndex_hard, _ = getTargIndexForPreds_iou(targetBoxes[0],outputBoxes,0.5,numClasses,hard_thresh=True,fixed=self.fixedAlign)
-        #targIndex, fullHit = getTargIndexForPreds_iou(targetBoxes[0],outputBoxes,0.4,numClasses,hard_thresh=False,fixed=self.fixedAlign)
-        #targIndex_ = targIndex*fullHit
-        #import pdb;pdb.set_trace()
-        act_relPred = torch.sigmoid(relPred)
-        predPairs=[]
-        somethreshold=0.5
-        for pi, score in enumerate(act_relPred):
-            n1,n2 = relIndexes[pi]
-            if score>somethreshold:
-                predPairs.append((min(n1,n2),max(n1,n2)))
-
-        gtRelHit_BROS=set()
-        relPrec_BROS=0
-        for pi,(n0,n1) in enumerate(predPairs):
-            BROS_gtG0 = pred_to_gt[n0].item()
-            BROS_gtG1 = pred_to_gt[n1].item()
-            hit=False
-            if BROS_gtG0>=0 and BROS_gtG1>=0:
-                pair_id = (min(BROS_gtG0,BROS_gtG1),max(BROS_gtG0,BROS_gtG1))
-                if pair_id in adj:
-                    hit=True
-                    relPrec_BROS+=1
-                    gtRelHit_BROS.add((min(BROS_gtG0,BROS_gtG1),max(BROS_gtG0,BROS_gtG1)))
-    
-        log['final_rel_XX_BROS_TP']=relPrec_BROS
-        log['final_rel_XX_predCount']=len(predPairs)
-        log['final_rel_XX_gtCount']=len(adj)
-
-        log['final_rel_BROS_prec'] = relPrec_BROS/len(predPairs) if len(predPairs)>0 else 1
-        log['final_rel_BROS_recall'] = relPrec_BROS/len(adj) if len(adj)>0 else 1
-        log['final_rel_BROS_Fm'] = 2*log['final_rel_BROS_prec']*log['final_rel_BROS_recall']/(log['final_rel_BROS_recall']+log['final_rel_BROS_prec']) if log['final_rel_BROS_recall']+log['final_rel_BROS_prec']>0 else 0
-        ######%^
-
-
-
-
-        gt_hit = [False]*targetBoxes.size(1)
-        if self.model_ref.predNN:
-            start=7
-        else:
-            start=6
-        ed_true_pos=0
-        for ni in range(outputBoxes.size(0)):
-            #if bbAlignment[ni]>-1 and bbFullHit[ni] and not gt_hit[bbAlignment[ni]]:
-            #    p_cls = outputBoxes[ni,start:start+self.model_ref.numBBTypes].argmax().item()
-            #    if targetBoxes[0,bbAlignment[ni],13+p_cls]==1:
-            #        ed_true_pos+=1
-            #        gt_hit[bbAlignment[ni]]=True
-            if pred_to_gt[ni]>-1 and not gt_hit[pred_to_gt[ni]]:
-                ed_true_pos+=1
-                gt_hit[bbAlignment[ni]]=True
-        log['ED_TP_XX'] = ed_true_pos
-        log['ED_true_count_XX'] = targetBoxes.size(1)
-        log['ED_pred_count_XX'] = outputBoxes.size(0)
-        
-        if targetBoxes.size(1)>0:
-            log['ED_recall'] = ed_true_pos/targetBoxes.size(1)
-        else:
-            log['ED_recall'] = 1
-        if outputBoxes.size(0)>0:
-            log['ED_prec'] = ed_true_pos/outputBoxes.size(0)
-        else:
-            log['ED_prec'] = 1
-        if log['ED_recall']+log['ED_prec']>0:
-            log['ED_F1']=2*log['ED_prec']*log['ED_recall']/(log['ED_recall']+log['ED_prec'])
-        else:
-            log['ED_F1']=0
-
-        if ap is not None:
-            log['rel_AP']=ap
-        if not self.model_ref.detector_frozen:
-            if 'nnFinalLoss' in losses:
-                log['nn loss improvement (neg is good)'] = losses['nnFinalLoss'].item()-nn_loss
-            if 'classFinalLoss' in losses:
-                log['class loss improvement (neg is good)'] = losses['classFinalLoss'].item()-class_loss
-
-        if 'bb_stats' in get:
-            if self.model_ref.detector_predNumNeighbors:
-                outputBoxes=torch.cat((outputBoxes[:,0:6],outputBoxes[:,7:]),dim=1) #throw away NN pred
-            if targetBoxes is not None:
-                targetBoxes = targetBoxes.cpu()
-                target_for_b = targetBoxes[0]
-            else:
-                target_for_b = torch.empty(0)
-            if self.model_ref.rotation:
-                ap_5, prec_5, recall_5, allPrec, allRecall =AP_dist(target_for_b,outputBoxes,0.9,numClasses)
-            else:
-                ap_5, prec_5, recall_5, allPrec, allRecall =AP_iou(target_for_b,outputBoxes,0.5,numClasses)
-            prec_5 = np.array(prec_5)
-            recall_5 = np.array(recall_5)
-            log['bb_AP']=ap_5
-            log['bb_prec']=prec_5
-            log['bb_recall']=recall_5
-            #Fm=2*(prec_5*recall_5)/(prec_5+recall_5)
-            #Fm[np.isnan(Fm)]=0
-            #log['bb_Fm_avg']=Fm.mean()
-            log['bb_allPrec']=allPrec
-            log['bb_allRecall']=allRecall
-            log['bb_allFm']= 2*allPrec*allRecall/(allPrec+allRecall) if allPrec+allRecall>0 else 0
-
-
-        if 'nn_acc' in get:
-            if self.model_ref.predNN and bbPred is not None:
-                predNN_p=bbPred[:,-1,0]
-                diffs=torch.abs(predNN_p-target_num_neighbors[0][bbAlignment].float())
-                nn_acc = (diffs<0.5).float().mean().item()
-                log['nn_acc']=nn_acc
-
-        if proposedInfo is not None:
-            propRecall,propPrec = proposedInfo[2:4]
-            log['prop_rel_recall'] = propRecall
-            log['prop_rel_prec'] = propPrec
-        if final_prop_rel_recall is not None:
-            log['final_prop_rel_recall']=final_prop_rel_recall
-        if final_prop_rel_prec is not None:
-            log['final_prop_rel_prec']=final_prop_rel_prec
-
-        got={}#outputBoxes, outputOffsets, relPred, relIndexes, bbPred, rel_prop_pred
-        for name in get:
-            if name=='relPred':
-                got['relPred'] = relPred.detach().cpu()
-            elif name=='outputBoxes':
-                if useGT:
-                    got['outputBoxes'] = targetBoxes.cpu()
-                else:
-                    got['outputBoxes'] = outputBoxes.detach().cpu()
-            elif name=='outputOffsets':
-                got['outputOffsets'] = outputOffsets.detach().cpu()
-            elif name=='relIndexes':
-                got['relIndexes'] = relIndexes
-            elif name=='bbPred':
-                got['bbPred'] = bbPred.detach().cpu()
-
-        return losses, log, got
 
 
 
@@ -1653,7 +954,7 @@ class GraphPairTrainer(BaseTrainer):
             
         else:
             gtTrans = None
-        #t#tic=timeit.default_timer()#t##t#
+        
         if useGT and len(useGT)>0:
             numBBTypes = self.model_ref.numBBTypes
             if 'word_bbs' in useGT: #useOnlyGTSpace and self.use_word_bbs_gt:
@@ -1703,28 +1004,7 @@ class GraphPairTrainer(BaseTrainer):
                                 gtTrans = gtTrans,
                                 merge_first_only = self.iteration<self.merge_first_only_until,
                                 gtGroups = gtGroups if 'groups' in useGT else None)
-            #TODO
-            #predPairingShouldBeTrue,predPairingShouldBeFalse, eRecall,ePrec,fullPrec,ap,proposedInfo = self.prealignedEdgePred(adj,relPred,relIndexes,rel_prop_pred)
-            #if bbPred is not None:
-            #    if self.model_ref.predNN or self.model_ref.predClass:
-            #        if target_num_neighbors is not None:
-            #            alignedNN_use = target_num_neighbors[0]
-            #        bbPredNN_use = bbPred[:,:,0]
-            #        start=1
-            #    else:
-            #        start=0
-            #    if self.model_ref.predClass:
-            #        if targetBoxes is not None:
-            #            alignedClass_use =  targetBoxes[0,:,13:13+self.model_ref.numBBTypes]
-            #        bbPredClass_use = bbPred[:,:,start:start+self.model_ref.numBBTypes]
-            #else:
-            #    bbPredNN_use=None
-            #    bbPredClass_use=None
-            #final_prop_rel_recall = final_prop_rel_prec = None
         else:
-            #outputBoxes, outputOffsets: one, predicted at the begining
-            #relPred, relIndexes, bbPred, predGroups: multiple, for each step in graph prediction. relIndexes indexes into predGroups, which indexes to outputBoxes
-            #rel_prop_pred: if we use prop, one for begining
             allOutputBoxes, outputOffsets, allEdgePred, allEdgeIndexes, allNodePred, allPredGroups, rel_prop_pred,merge_prop_scores, final = self.model(image,
                     targetBoxes if gtTrans is not None else None,
                     otherThresh=self.conf_thresh_init, 
@@ -1735,8 +1015,8 @@ class GraphPairTrainer(BaseTrainer):
             #gtPairing,predPairing = self.alignEdgePred(targetBoxes,adj,outputBoxes,relPred)
         if forward_only:
             return
-        #t#self.opt_history['run model'].append(timeit.default_timer()-tic)#t#
-        #t#tic=timeit.default_timer()#t##t#
+        
+        
         ### TODO code prealigned
         losses=defaultdict(lambda:0)
         log={}
@@ -1757,7 +1037,7 @@ class GraphPairTrainer(BaseTrainer):
                 #if self.model_ref.merge_first and useOnlyGTSpace:
                 #    graphIteration+=1
 
-                #t#tic2=timeit.default_timer()#t##t#
+                
                 predEdgeShouldBeTrue,predEdgeShouldBeFalse, bbAlignment, proposedInfoI, logIter, edgePredTypes, missedRels = self.simplerAlignEdgePred(
                         targetBoxes,
                         targetIndexToGroup,
@@ -1774,7 +1054,7 @@ class GraphPairTrainer(BaseTrainer):
                         self.thresh_error[graphIteration],
                         merge_only= graphIteration==0 and merged_first
                         )
-                #t#self.opt_history['newAlignEdgePred gI{}'.format(graphIteration)].append(timeit.default_timer()-tic2)#t#
+                
 
                 allEdgePredTypes.append(edgePredTypes)
                 allMissedRels.append(missedRels)
@@ -1920,19 +1200,6 @@ class GraphPairTrainer(BaseTrainer):
 
 
 
-                
-
-
-                    #t#self.opt_history['box_loss'].append(timeit.default_timer()-tic2)#t#
-
-                    #boxLoss *= self.lossWeights['box']
-                    #if relLoss is not None:
-                    #    loss = relLoss + boxLoss
-                    #else:
-                    #    loss = boxLoss
-                #else:
-                #    loss = relLoss
-
 
 
                 if self.model_ref.predClass and nodePredClass_use is not None and nodePredClass_use.size(0)>0:
@@ -2043,21 +1310,6 @@ class GraphPairTrainer(BaseTrainer):
                 if len(predTargGroup)>0:
                     gtGroup = getGTGroup(predTargGroup,targetIndexToGroup)
                     predToGTGroup[node]=gtGroup
-                    #assert gtGroup not in gtGroupToPred #shouldn't happend with gt detections and grouping
-                    #if it has split a group over two nodes, we'll just use both of them, as this is supposed to query from gt
-                    #if useGTGroups and gtGroup in gtGroupToPred:
-                    #    print('WARNING WARNING')
-                    #    print('> pred groups NOT aligned to GT groups')
-                    #    predTargGroupOther = [bbAlignment[bb] for bb in predGroups[gtGroupToPred[gtGroup]] if bbAlignment[bb]>=0]
-                    #    print('> gt group:{}, me:{}, other:{}'.format(gtGroups[gtGroup],predTargGroup,predTargGroupOther))
-                    #    print('WARNING WARNING')
-                    #if gtGroup not in gtGroupToPred:
-                    #    gtGroupToPred[gtGroup]=node
-                    #else:
-                    #    #this is missed
-                    #    del predToGTGroup[gtGroupToPred[gtGroup]]
-                    #    del predToGTGroup[node]
-                    #    del gtGroupToPred[gtGroup]
             
             classMap = self.scoreClassMap
             num_class = len(self.scoreClassMap)
@@ -2065,70 +1317,6 @@ class GraphPairTrainer(BaseTrainer):
             classMap = {v-minI:k for k,v in classMap.items()}
             classIs = nodePred[:,-1,1:1+num_class].argmax(dim=1).tolist()
             gt_classIs = targetBoxes[0,:,13:13+num_class].argmax(dim=1).tolist()
-            #unused_gt_adj = set(gtGroupAdj)
-            #candidate_lists=defaultdict(list)
-            #for ei,(n0,n1) in enumerate(edgeIndexes):
-            #    if n0 not in predToGTGroup or n1 not in predToGTGroup:
-            #        continue
-            #    gtG0 = predToGTGroup[n0]
-            #    gtG1 = predToGTGroup[n1]
-            #    class0 = classMap[classIs[n0]]
-            #    class1 = classMap[classIs[n1]]
-            #    true_pos = (min(gtG0,gtG1),max(gtG0,gtG1)) in gtGroupAdj
-            #    if true_pos:
-            #        try:
-            #            unused_gt_adj.remove((min(gtG0,gtG1),max(gtG0,gtG1)))
-            #        except KeyError as e:
-            #            if useGTGroups:
-            #                raise e
-            #    
-            #    if (class0=='header' and class1=='question') or (class0=='question' and class1=='answer'):
-            #        candidate_lists[gtG1].append((edgePred[ei,-1,1],true_pos))
-            #    elif (class1=='header' and class0=='question') or (class1=='question' and class0=='answer'):
-            #        candidate_lists[gtG0].append((edgePred[ei,-1,1],true_pos))
-            #    else:
-            #        candidate_lists[gtG0].append((edgePred[ei,-1,1],False))
-            #        candidate_lists[gtG1].append((edgePred[ei,-1,1],False))
-            #for gtG0,gtG1 in unused_gt_adj:
-            #    gtBB0=gtGroups[gtG0][0]
-            #    gtBB1=gtGroups[gtG1][0]
-            #    class0=classMap[gt_classIs[gtBB0]]
-            #    class1=classMap[gt_classIs[gtBB1]]
-            #    if (class0=='header' and class1=='question') or (class0=='question' and class1=='answer'):
-            #        candidate_lists[gtG1].append((-1,False))
-            #    elif (class1=='header' and class0=='question') or (class1=='question' and class0=='answer'):
-            #        candidate_lists[gtG0].append((-1,False))
-            #    #elif class0=='question'  and class1=='question':
-            #    #    #IDK
-            #    #    candidate_lists[gtG0].append((-1,False))
-            #    else:
-            #        #there are some lableling annomalies in the FUNSD test set
-            #        candidate_lists[gtG0].append((-1,False))
-            #        #assert False
-
-            #sum_ap=0
-            #hit_at_1=0
-            #hit_at_2=0
-            #hit_at_5=0
-
-            #for gtG, candidate_list in candidate_lists.items():
-            #    #if len(candidate_list)>1 or candidate_list[0][0]>=0:
-            #    #    sum_ap += computeAP(candidate_list)
-            #    #else:
-            #    #    sum_ap += 0 #total miss
-
-            #    candidate_list.sort(key=lambda a:a[0],reverse=True)
-            #    if candidate_list[0][1]:
-            #        hit_at_1 +=1
-            #    if any(a[1] for a in candidate_list[:2]):
-            #        hit_at_2 +=1
-            #    if any(a[1] for a in candidate_list[:5]):
-            #        hit_at_5 +=1
-            ##log['DocStruct mAP'] = sum_ap/len(candidate_lists) #not quite right. Need to add every other possible rel. A
-            #if len(candidate_lists)>0:
-            #    log['DocStruct hit@1'] = hit_at_1/len(candidate_lists)
-            #    log['DocStruct hit@2'] = hit_at_2/len(candidate_lists)
-            #    log['DocStruct hit@5'] = hit_at_5/len(candidate_lists)
 
 
             sum_hit=0
@@ -2173,8 +1361,8 @@ class GraphPairTrainer(BaseTrainer):
 
             #TODO missed rels (nodes)
 
-        #t#self.opt_history['all losses'].append(timeit.default_timer()-tic)#t#
-        #t#tic=timeit.default_timer()#t##t#
+        
+        
         #print final state of graph
         ###
         gt_groups_adj = instance['gt_groups_adj']
@@ -2226,7 +1414,7 @@ class GraphPairTrainer(BaseTrainer):
         #log['rel_prec']= fullPrec
         #log['rel_recall']= eRecall
         #log['rel_Fm']= 2*(fullPrec*eRecall)/(eRecall+fullPrec) if eRecall+fullPrec>0 else 0
-        #t#self.opt_history['final eval'].append(timeit.default_timer()-tic)#t#
+        
 
 
 
@@ -3461,96 +2649,4 @@ class GraphPairTrainer(BaseTrainer):
 
             plt.savefig('characterization_{}.png'.format(name))
 
-        #plt.show()
 
-    def optimizeF(self,relPred,relCand,predNN,rel_threshold=0.7):
-        penalty = 0.25
-        #print('optimizing with penalty {}'.format(penalty))
-        thresh=0.15
-        while thresh<0.45:
-            keep = relPred>thresh
-            newRelPred = relPred[keep].cpu()
-            if newRelPred.size(0)<700:
-                break
-        if newRelPred.size(0)>0:
-            #newRelCand = [ cand for i,cand in enumerate(relCand) if keep[i] ]
-            usePredNN= True# predNN is not None and config['optimize']!='gt'
-            idMap={}
-            newId=0
-            newRelCand=[]
-            numNeighbors=[]
-            for index,(id1,id2) in enumerate(relCand):
-                if keep[index]:
-                    if id1 not in idMap:
-                        idMap[id1]=newId
-                        if not usePredNN:
-                            numNeighbors.append(target_num_neighbors[0,bbAlignment[id1]])
-                        else:
-                            numNeighbors.append(predNN[id1].item())
-                        newId+=1
-                    if id2 not in idMap:
-                        idMap[id2]=newId
-                        if not usePredNN:
-                            numNeighbors.append(target_num_neighbors[0,bbAlignment[id2]])
-                        else:
-                            numNeighbors.append(predNN[id2].item())
-                        newId+=1
-                    newRelCand.append( [idMap[id1],idMap[id2]] )            
-
-
-            #if not usePredNN:
-                #    decision = optimizeRelationships(newRelPred,newRelCand,numNeighbors,penalty)
-            #else:
-            decision= optimizeRelationshipsSoft(newRelPred,newRelCand,numNeighbors,penalty, rel_threshold)
-            decision= torch.from_numpy( np.round_(decision).astype(int) )
-            decision=decision.to(relPred.device)
-            relPred[keep] = torch.where(0==decision,relPred[keep]-1,relPred[keep]+self.thresh_rel)
-            relPred[~keep] -=1
-
-    def bn_update(self):
-        r"""Updates BatchNorm running_mean, running_var buffers in the model.
-        It performs one pass over data in `loader` to estimate the activation
-        statistics for BatchNorm layers in the model.
-        Args:
-            loader (torch.utils.data.DataLoader): dataset loader to compute the
-                activation statistics on. Each data batch should be either a
-                tensor, or a list/tuple whose first element is a tensor
-                containing data.
-            model (torch.nn.Module): model for which we seek to update BatchNorm
-                statistics.
-            device (torch.device, optional): If set, data will be trasferred to
-                :attr:`device` before being passed into :attr:`model`.
-        """
-        model=self.model
-        loader=self.data_loader
-        if not _check_bn(model):
-            return
-        print('updating bn')
-        was_training = model.training
-        model.train()
-        momenta = {}
-        #model.apply(_reset_bn)
-        #model.apply(lambda module: _get_momenta(module, momenta))
-        n = 0
-        with torch.no_grad():
-            for instance in loader:
-
-                b = 1#input.size(0)
-
-                momentum = b / float(n + b)
-                #for module in momenta.keys():
-                #    module.momentum = momentum
-
-                self.newRun(instance,self.useGT(self.iteration),forward_only=True)
-                n += b
-
-        #model.apply(lambda module: _set_momenta(module, momenta))
-        #model.train(was_training)
-
-    def update_swa_batch_norm(self):
-        #update_bn(self.data_loader,self.swa_model)
-        tmp=self.model.cpu()
-        self.model=self.swa_model.train()
-        for instance in self.data_loader:
-            self.newRun(instance,self.useGT(self.iteration),forward_only=True)
-        self.model=tmp
