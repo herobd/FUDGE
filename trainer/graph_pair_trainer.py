@@ -6,7 +6,7 @@ from utils import util
 from collections import defaultdict
 from evaluators.draw_graph import draw_graph
 import matplotlib.pyplot as plt
-from utils.yolo_tools import non_max_sup_iou, AP_iou, non_max_sup_dist, AP_dist, AP_textLines, getTargIndexForPreds_iou, newGetTargIndexForPreds_iou, getTargIndexForPreds_dist, newGetTargIndexForPreds_textLines, computeAP, non_max_sup_overseg
+from utils.yolo_tools import non_max_sup_iou, AP_iou, non_max_sup_dist, AP_dist, getTargIndexForPreds_iou, newGetTargIndexForPreds_iou, getTargIndexForPreds_dist, computeAP, non_max_sup_overseg
 from utils.group_pairing import getGTGroup, pure, purity
 from datasets.testforms_graph_pair import display
 import random, os, math
@@ -462,17 +462,10 @@ class GraphPairTrainer(BaseTrainer):
             saveEdgePred={}
             if not merge_only:
                 #get predictions into  names
-                if not self.model_ref.legacy:
-                    predsRel = edgePred[...,1] 
-                    predsOverSeg = edgePred[...,2] 
-                    predsGroup = edgePred[...,3] 
-                    predsError = edgePred[...,4] 
-                else:
-                    predsRel = predsEdge
-                    predsOverSeg = edgePred[...,1] 
-                    predsGroup = edgePred[...,2] 
-                    predsError = edgePred[...,3]
-                    predsEdge,_ = torch.max(torch.stack((predsRel,predsOverSeg,predsGroup),dim=0),dim=0)
+                predsRel = edgePred[...,1] 
+                predsOverSeg = edgePred[...,2] 
+                predsGroup = edgePred[...,3] 
+                predsError = edgePred[...,4] 
 
                 predsGTRel = []
                 predsGTNoRel = []
@@ -1939,16 +1932,10 @@ class GraphPairTrainer(BaseTrainer):
             gtGroups2Pred.append(gtGroup2Pred)
             
             if graphIteration>0 or not self.model.merge_first:
-                if not self.model_ref.legacy:
-                    edgeScores = torch.sigmoid(edgePred[:,-1,0])
-                    relScores = torch.sigmoid(edgePred[:,-1,1])
-                    mergeScores = torch.sigmoid(edgePred[:,-1,2])
-                    groupScores = torch.sigmoid(edgePred[:,-1,3])
-                else:
-                    relScores = torch.sigmoid(edgePred[:,-1,0])
-                    mergeScores = torch.sigmoid(edgePred[:,-1,1])
-                    groupScores = torch.sigmoid(edgePred[:,-1,2])
-                    edgeScores = torch.max(torch.sigmoid(edgePred[:,-1,0:3]),dim=1)
+                edgeScores = torch.sigmoid(edgePred[:,-1,0])
+                relScores = torch.sigmoid(edgePred[:,-1,1])
+                mergeScores = torch.sigmoid(edgePred[:,-1,2])
+                groupScores = torch.sigmoid(edgePred[:,-1,3])
             else:
                 edgeScores=relScores=groupScores=None
                 mergeScores = torch.sigmoid(edgePred[:,-1,0])

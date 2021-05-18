@@ -1,44 +1,15 @@
 # Visual FUDGE: Form Understanding via Dynamic Graph Editing
 
-Todo self.useCurvedBBs needs removed
+This is the code for our ICDAR 2021 paper "Visual FUDGE: Form Understanding via Dynamic Graph Editing" (TODO arXiv link)
 
-This code is free to use for non-commericial purposes. Contact me if commericialization is desired.
+This code is licensed under GNU GPL v3. If you would like it distributed to you under a different license, please contact me (briandavis@byu.net).
+
 
 ## Requirements
-* Python 3.x (at least 3.7 for doing optimization)
-* PyTorch 1.0+
-
-I used conda, but it shouldn't be hard to install the packages another way.
-
-# Installing to get it to work with pytorch 1
-First check gcc version (must be atleast 4.9) and cuda version (8 requires gcc to be 5.3 or lower).
-If upgrading cuda, remove the old version first either with apt-get or uninstall script in /usr/cuda/bin.
-    (Be sure CUDA_HOME and PATH are right after installation)
-
-`conda install $`
-* `pytorch torchvision -c pytorch` or what ever the command is on pytorch.org given cuda version, etc
-* `scikit-image`
-* `shapely`
-No `opencv` any more
-
-`pytorch-geometric`: https://pytorch-geometric.readthedocs.io/en/latest/notes/installation.html
-
-`pip install gensim` conda installing this is weird 
-
-`pip install bpemb`
-
-`pip install editdistance`
-
-`pip install knockknock`
-
-pip install gensim bpemb editdistance knockknock
-
-
-for cvxpy (optimization, not used now), you must have python 3.7 or later:
-
-clone github: https://github.com/cvxgrp/cvxpy
-
-`python setup.py install` in the cvxpy repo
+* Python 3
+* PyTorch 1.7+
+* scikit-image
+* pytorch-geometric https://pytorch-geometric.readthedocs.io/en/latest/notes/installation.html
 
 
 ## Reproducability instructions

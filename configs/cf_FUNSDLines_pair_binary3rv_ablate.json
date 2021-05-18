@@ -125,7 +125,7 @@
         "featurizer_bb_start_w": 32,
         "bb_featurizer_conv": ["sep64","M","sep64","sep64","M","sep128","sep128","M"],
 
-        "fix_bi_dir": true,
+        
         "reintroduce_visual_features": "fixed map",
         "graph_config": [
         {

@@ -8,7 +8,6 @@ import argparse
 import torch
 from model import *
 from model.loss import *
-from model.metric import *
 from data_loader import getDataLoader
 from trainer import *
 from logger import Logger
@@ -46,7 +45,6 @@ def main_wraper(rank,config,resume,world_size):
         else:
             main(rank,config,resume,world_size)
 
-@slack_sender(webhook_url=webhook_url, channel="herding-neural-networks")
 def notify_main(rank,config, resume,world_size=None):
     main(rank,config, resume,world_size)
 

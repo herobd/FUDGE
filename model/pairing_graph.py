@@ -11,7 +11,6 @@ from torchvision.ops import RoIAlign
 from skimage import draw
 from model.net_builder import make_layers, getGroupSize
 from utils.yolo_tools import non_max_sup_iou, non_max_sup_dist
-from utils.util import decode_handwriting
 import math
 import random
 import json

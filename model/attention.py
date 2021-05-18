@@ -3,7 +3,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-#These are taken from the Annotated Transformer (http://nlp.seas.harvard.edu/2018/04/03/attention.html#attention)
+#This code is taken from the Annotated Transformer (http://nlp.seas.harvard.edu/2018/04/03/attention.html#attention)
+
 def clones(module, N):
     "Produce N identical layers."
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
@@ -38,8 +39,8 @@ def attention(query, key, value, mask=None, key_padding_mask=None, dropout=None,
     p_attn = F.softmax(scores, dim = -1)
     
     if mask is not None and fixed:
-        p_attn = p_attn.masked_fill(mask == 0, 0) #this is needed in casa node has no neigbors
-        #will create a zero vector in those cases, instead of an average of all nodes
+        p_attn = p_attn.masked_fill(mask == 0, 0) #this is needed in case a node has no neigbors (softmax gives even attention to everything
+        #will create a zero vector in those cases, instead of the average of all nodes
     if dropout is not None:
         p_attn = dropout(p_attn)
     return torch.matmul(p_attn, value), p_attn

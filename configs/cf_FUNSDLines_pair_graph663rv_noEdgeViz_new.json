@@ -117,7 +117,7 @@
         "featurizer_bb_start_w": 10,
         "bb_featurizer_conv": ["sep256","sep256","M","sep256"],
 
-        "fix_bi_dir": true,
+        
         "reintroduce_visual_features": "fixed map",
         "graph_config": [
 	    {
