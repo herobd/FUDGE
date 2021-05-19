@@ -1,9 +1,3 @@
-<<<<<<< HEAD
-# FUDGE
-Code for the ICDAR2021 paper "Visual FUDGE: Form Understanding via Dynamic Graph Editing" 
-
-Obviously it's not here yet, but it will be in time for the conference in September!
-=======
 # Visual FUDGE: Form Understanding via Dynamic Graph Editing
 
 This is the code for our ICDAR 2021 paper "Visual FUDGE: Form Understanding via Dynamic Graph Editing" (http://arxiv.org/abs/2105.08194)
@@ -309,4 +303,3 @@ The config file is saved in the same folder. (as a reference only, the config is
   }
   ```
 
->>>>>>> origin/release21
