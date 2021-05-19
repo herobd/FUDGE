@@ -101,8 +101,8 @@ class FUNSDBoxDetect(BoxDetectDataset):
         if images is not None:
             self.images=images
         else:
-            splitFile = 'train_valid_test_split.json'
-            with open(os.path.join(dirPath,splitFile)) as f:
+            splitFile = 'FUNSD_train_valid_test_split.json'
+            with open(os.path.join(splitFile)) as f:
                 #if split=='valid' or split=='validation':
                 #    trainTest='train'
                 #else:

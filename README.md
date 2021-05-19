@@ -1,6 +1,8 @@
 # Visual FUDGE: Form Understanding via Dynamic Graph Editing
 
-This is the code for our ICDAR 2021 paper "Visual FUDGE: Form Understanding via Dynamic Graph Editing" (TODO arXiv link)
+This is the code for our ICDAR 2021 paper "Visual FUDGE: Form Understanding via Dynamic Graph Editing" (http://arxiv.org/abs/2105.08194)
+
+This is still getting cleaned up and tweaked. This README is not up to date. I'll probably be done in about a month.
 
 This code is licensed under GNU GPL v3. If you would like it distributed to you under a different license, please contact me (briandavis@byu.net).
 
@@ -15,86 +17,44 @@ This code is licensed under GNU GPL v3. If you would like it distributed to you 
 ## Reproducability instructions
 
 
-### Setting up dataset 
-`../data/forms/`
+### Dataset 
+NAF see https://github.com/herobd/NAF_dataset
+FUNSD see https://guillaumejaume.github.io/FUNSD/
 
-### Pretraining detector network
-`python train.py -c cf_detector.json`
+The configs expect the datasets to be at `../data/NAF_dataset/` and `../data/FUNSD/`
 
-### Training pairing network
-`python train.py -c cf_pairing.json`
+### Pretraining the detector network
+FUNSD: `python train.py -c configs/cf_FUNSDLines_detect_augR_staggerLighter.json`
+
+NAF: `python train.py -c configs/cf_NAF_detect_augR_staggerLighter.json`
+
+### Training the full network
+FUNSD: `python train.py -c cf_FUNSDLines_pair_graph663rv_new.json`
+
+Word-FUDGE: `python train.py -c cf_FUNSDWords_pair_graph663rv_new.json`
+
+NAF: `python train.py -c cf_NAF_pair_graph663rv_new.json`
+
+The ablation uses the following configs:
+* cf_FUNSDLines_pair_graph9rv_ablate.json
+* cf_FUNSDLines_pair_graph77rv_ablate.json
+* cf_FUNSDLines_pair_graph222rv_ablate.json
 
 ### Evaluating
-
-#### Standard experiments
 
 If you want to run on GPU, add `-g #`, where `#` is the GPU number.
 
 Remove the `-T` flag to run on the validation set.
 
 
-Detection, full set: `python eval.py -c saved/detector/checkpoint-iteration150000.pth -n 0 -T`
+Generally (works for detection and full model): `python eval.py -c path/to/checkpoint.pth -T`
 
-Detection, pairing set: `python eval.py -c saved/detector/checkpoint-iteration150000.pth -n 0 -T -a data_loader=special_dataset=simple`
+Word-FUDGE needs to be told to evaluate using the GT word boxes: `python eval.py -c path/to/checkpoint.pth -T -a useDetect=word_bbs`
 
-Pairing, no optimization: `python eval.py -c saved/pairing/checkpoint-iteration125000.pth -n 0 -T`
-`
+For the ablation using line-of-sight proposal: `python eval.py -c path/to/checkpoint.pth -T -a model=change_relationship_proposal=line_of_sight`
 
-Pairing, with optimization: `python eval.py -c saved/pairing/checkpoint-iteration125000.pth -n 0 -T -a optimize=true`
+For the ablation preventing merges: `python eval.py -c path/to/checkpoint.pth -T -a model=graph_config=0=merge_thresh=1.1,model=graph_config=1=merge_thresh=1.1,model=graph_config=2=merge_thresh=1.1`
 
-#### Perfect information experiments
-
-Pairing, GT detections: `python eval.py -c saved/pairing/checkpoint-iteration125000.pth -n 0 -T -a useDetect=gt`
-
-Pairing, optimized with GT num neighnors:  `python eval.py -c saved/pairing/checkpoint-iteration125000.pth -n 0 -T -a optimize=gt`
-
-### Training baseline models
-
-#### Detector using regular convs
-`python train.py -c cf_baseline_detector.json`
-
-Note: This will take a while before it begins training on your first run as it caches smaller sizes of the dataset.
-
-#### Classifier using non-visual features
-
-Make training data for no visual feature pairing: 
-1. `mkdir out`
-2. `python eval.py -c saved/detector/checkpoint-iteration150000.pth -g 0 -n 10000 -a save_json=out/detection_data,data_loader=batch_size=1,data_loader=num_workers=0,data_loader=rescale_range=0.52,data_loader=crop_params=,validation=rescale_range=0.52,validation=crop_params=,data_loader=cache_resized_images=0`
-
-Train no visual feature pairing: `python train.py -c cf_no_vis_pairing.json`
-
-### Evaluating baseline models
-
-Detection with regular convs, full set: `python eval.py -c saved/baseline_detector/checkpoint-iteration150000.pth -n 0 -T`
-
-Detection with regular convs, pairing set: `python eval.py -c saved/baseline_detector/checkpoint-iteration150000.pth -n 0 -T -a data_loader=special_dataset=simple`
-
-
-Distance based pairing: `python eval.py -f cf_test_no_vis_pairing.json -n 0 -T -a rule=closest`
-
-Scoring functions pairing: `python eval.py -f cf_test_no_vis_pairing.json -n 0 -T -a rule=icdar`
-
-No visual features pairing: `python eval.py -f cf_test_no_vis_pairing.json -n 0 -T`
-
-No visual features pairing, with optimization: `python eval.py -f cf_test_no_vis_pairing.json -n 0 -T -a optimize=true`
-
-#### Perfect information experiments
-
-For GT detections:
-
-`python eval.py -f cf_test_no_vis_pairing.json -n 0 -T -a rule=closest,useDetect=gt`
-
-`python eval.py -f cf_test_no_vis_pairing.json -n 0 -T -a rule=icdar,useDetect=gt`
-
-`python eval.py -f cf_test_no_vis_pairing.json -n 0 -T -a useDetect=gt`
-
-For optimization with GT num neighbors:
-
-`python eval.py -f cf_test_no_vis_pairing.json -n 0 -T -a rule=closest,optimize=gt`
-
-`python eval.py -f cf_test_no_vis_pairing.json -n 0 -T -a rule=icdar,optimize=gt`
-
-`python eval.py -f cf_test_no_vis_pairing.json -n 0 -T -a optimize=gt`
 
 
 ## Usage
@@ -124,19 +84,10 @@ There is an additional `-a` flag which allows overwriting of specific values of 
 
 Evaluating detector:
 * `-a pretty=true`: Makes printed pictured cleaner (less details)
-* `-a save_json=path/to/dir`: Save the detection results as jsons matching the dataset format.
-* `-a THRESH=[float]`: Modify the threshold for displaying and precision/recall calculations. Default is 0.92
 
 Evaluatring pairing:
-* `-a useDetect=[gt,path]`:  Whether to use GT detections (`gt`) or can be directory with jsons with saved detections.
-* `-a rule=[closest,icdar]`: Use a rule (nearest or scoring functions) to do pairing (instead of model).
-* `-a optimize=[true,gt]`: Use optimization. If `gt` specified it will use the GT number of neighbors.
-* `-a penalty=[float]`: The variable *c* in Equation 1. Default is 0.25
-* `-a THRESH=[float]`: Modify the thresh for calculating prec/recall for relationships. Also is *T* in Equation 1. Default is 0.7
-* `-a sweep_threshold=true`: Run metrics using a range of thresholds
-* `-a draw_thresh=[float]`: Seperate threshold for which relationships get saved in images.
-* `-a confThresh=[float]`: Threshold used for detections.
-* `-a pretty=[true,light,clean]`: Different ways of displaying the results.
+* `-a useDetect=True|word_bbs`:  Whether to use GT detection line boxes or word boxes
+* `-a draw_verbosity=0-3`: Different ways of displaying the results.
 
 ## File Structure
   ```

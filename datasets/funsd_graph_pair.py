@@ -41,8 +41,8 @@ class FUNSDGraphPair(GraphPairDataset):
             if 'overfit' in config and config['overfit']:
                 splitFile = 'overfit_split.json'
             else:
-                splitFile = 'train_valid_test_split.json'
-            with open(os.path.join(dirPath,splitFile)) as f:
+                splitFile = 'FUNSD_train_valid_test_split.json'
+            with open(os.path.join(splitFile)) as f:
                 #if split=='valid' or split=='validation':
                 #    trainTest='train'
                 #else:
