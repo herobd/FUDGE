@@ -62,8 +62,6 @@ def plotRectAndAngle(img,color,x1y1x2y2r,lineW=1):
 
 def FormsBoxDetect_eval(config,instance, trainer, metrics, outDir=None, startIndex=None, lossFunc=None, toEval=None):
     return FUNSDBoxDetect_eval(config,instance, trainer, metrics, outDir, startIndex, lossFunc, toEval)
-def AdobeBoxDetect_eval(config,instance, trainer, metrics, outDir=None, startIndex=None, lossFunc=None, toEval=None):
-    return FUNSDBoxDetect_eval(config,instance, trainer, metrics, outDir, startIndex, lossFunc, toEval)
 def FUNSDBoxDetect_eval(config,instance, trainer, metrics, outDir=None, startIndex=None, lossFunc=None, toEval=None):
     def __eval_metrics(data,target):
         acc_metrics = np.zeros((output.shape[0],len(metrics)))

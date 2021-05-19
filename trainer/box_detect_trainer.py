@@ -4,7 +4,6 @@ from base import BaseTrainer
 import timeit
 from utils import util
 from collections import defaultdict
-from evaluators import FormsBoxDetect_printer
 from utils.yolo_tools import non_max_sup_iou, AP_iou, non_max_sup_dist, AP_dist
 from datasets.testforms_box import display
 
@@ -284,13 +283,6 @@ class BoxDetectTrainer(BaseTrainer):
         losses={}
         log={}
         ##tic=timeit.default_timer()
-        #predictions = util.pt_xyrs_2_xyxy(outputBoxes)
-        #if self.iteration % self.save_step == 0:
-        #    targetPoints={}
-        #    targetPixels=None
-        #    _,lossC=FormsBoxDetect_printer(None,instance,self.model,self.gpu,self._eval_metrics,self.checkpoint_dir,self.iteration,self.loss['box'])
-        #    this_loss, position_loss, conf_loss, class_loss, recall, precision = lossC
-        #else:
         data, targetBoxes, targetBoxes_sizes, targetLines, targetLines_sizes, targetPoints, targetPoints_sizes, targetPixels,target_num_neighbors = self._to_tensor(instance)
         if not self.model.predNumNeighbors:
             target_num_neighbors=None

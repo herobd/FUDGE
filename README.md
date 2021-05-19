@@ -1,4 +1,5 @@
-# Visual FUDGE: Form Understanding via Dynamic Graph Editing
+# Visual FUDGE: 
+# Form Understanding via Dynamic Graph Editing
 
 This is the code for our ICDAR 2021 paper "Visual FUDGE: Form Understanding via Dynamic Graph Editing" (http://arxiv.org/abs/2105.08194)
 
@@ -12,6 +13,10 @@ This code is licensed under GNU GPL v3. If you would like it distributed to you 
 * PyTorch 1.7+
 * scikit-image
 * pytorch-geometric https://pytorch-geometric.readthedocs.io/en/latest/notes/installation.html
+
+## Model weights
+
+Eventually I'll get the weights added as a release.
 
 
 ## Reproducability instructions
@@ -40,6 +45,11 @@ The ablation uses the following configs:
 * cf_FUNSDLines_pair_graph77rv_ablate.json
 * cf_FUNSDLines_pair_graph222rv_ablate.json
 
+#### Wait, how long does this take to train?
+If trained to the full 700,000 iterations, it takes a couple weeks, depending on your GPU. I used a batch size of 1 due to hardware limitations. I also hard-coded the batch size of 1, so you have to as well (GCNs handle batches specially and I didn't want to code that up).
+
+However, from an experiment I ran, I think you can get the same results with only 250,000 iterations by accumulating the gradient to pretend a batch size of 5. This is done with by adding `"accum_grad_steps": 5` to `trainer` in the config json. Yes, that means it only updates the weights 50,000 times.
+
 ### Evaluating
 
 If you want to run on GPU, add `-g #`, where `#` is the GPU number.
@@ -54,6 +64,8 @@ Word-FUDGE needs to be told to evaluate using the GT word boxes: `python eval.py
 For the ablation using line-of-sight proposal: `python eval.py -c path/to/checkpoint.pth -T -a model=change_relationship_proposal=line_of_sight`
 
 For the ablation preventing merges: `python eval.py -c path/to/checkpoint.pth -T -a model=graph_config=0=merge_thresh=1.1,model=graph_config=1=merge_thresh=1.1,model=graph_config=2=merge_thresh=1.1`
+
+To compare to DocStruct `-a gtGroups=1,useDetect=1` is used.
 
 
 
