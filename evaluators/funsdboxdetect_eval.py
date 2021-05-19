@@ -4,7 +4,6 @@ import numpy as np
 import torch
 import utils.img_f as img_f
 from utils import util
-from model.alignment_loss import alignment_loss
 import math
 from model.loss import *
 from collections import defaultdict
@@ -111,22 +110,6 @@ def FUNSDBoxDetect_eval(config,instance, trainer, metrics, outDir=None, startInd
     loss=0
     index=0
     ttt_hit=True
-    #if 22>=startIndex and 22<startIndex+batchSize:
-    #    ttt_hit=22-startIndex
-    #else:
-    #    return 0
-    if 'points' in out:
-        alignmentPointsPred={}
-        alignmentPointsTarg={}
-        index=0
-        for name,targ in targetPointsT.items():
-            #print(outputPoints[0].shape)
-            #print(targetPointsSizes)
-            #print('{} {}'.format(index, name))
-            lossThis, predIndexes, targetPointsIndexes = alignment_loss(outputPoints[index],targ,targetPointsSizes[name],**config['loss_params']['point'],return_alignment=True, debug=ttt_hit, points=True)
-            alignmentPointsPred[name]=predIndexes
-            alignmentPointsTarg[name]=targetPointsIndexes
-            index+=1
 
     data = data.cpu().data.numpy()
 

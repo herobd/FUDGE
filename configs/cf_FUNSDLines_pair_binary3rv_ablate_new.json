@@ -90,7 +90,7 @@
         "swa_lr_mul": 0.1,
         "adapt_lr": false
     },
-    "arch": "PairingGroupingGraph", 
+    "arch": "FUDGE", 
     "model": {
         "detector_checkpoint": "saved/FUNSDLines_detect_augR_staggerLighter/checkpoint-iteration250000.pth",
         "conf_thresh": 0.5,

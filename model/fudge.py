@@ -30,9 +30,51 @@ def groupRect(corners):
     corners=np.array(corners)
     return corners[:,0].min(), corners[:,1].min(), corners[:,2].max(), corners[:,3].max()
 
-class PairingGroupingGraph(BaseModel):
+
+'''
+This defines the FUDGE model
+
+It's hyper-parameters are specified by the config dictionary. I'll list it's important options here. If it isn't listed here, you should probably just leave what's in the config.
+
+    * "detector_checkpoint": this is a path to the checkpoint. It will read the detectors config information to build the backbone for FUDGE
+    * "detector_config": You can alternately give the detector config dictionary. This is the same as in the configuration file, only it also needs the "arch" in this one.
+    * "pretrained_backbone_checkpoint": Instead of loading from a pretrained detector, you can load just the backbone of a trained FUDGE/Davis et al. model. You need to specify "detector_config" however.
+    * "detect_conf_thresh": This is the threshold it will use to select the initial nodes. The threshold is randomly perturbed during training. 0.5 is the value I use.
+    * "start_frozen": Tells the model to freeze the detector weights at first
+
+    * "relationship_proposal": The method of proposing relationships. FUDGE uses "feature_nn", Davis et al used "line-of-sight"
+    * "percent_rel_to_keep": this is the percent of the total possible relationships to keep during the proposal step
+    * "max_rel_to_keep": A hard threshold to set for memory reasons
+
+    * "use_detect_layer_feats"/"use_2nd_detect_layer_feats"/"use_2nd_detect_scale_feats"/"use_2nd_detect_feats_size": These define which layers of the detector we're getting the visual features from. I made the detector funny in that it has nested nn.Sequentials, so it's not straighforward to select the ones you want.
+    * "expand_rel_context"/"expand_bb_context": How much to pad the ROIAligned windows for edges and nodes respectively.
+    * "featurizer_start_h"/"featurizer_start_w" and "featurizer_bb_start_h"/"featurizer_bb_start_w": The resolution the ROIAlign pools to for edges and nodes respectively.
+    * "featurizer_conv"/"bb_featurizer_conv": These define the CNN used encode the features from the detector for the edge and node respectively. This is my own shorthand code:
+        A number is a 3x3 conv (with normalization, dropout, and ReLU)
+        "sep#" is a 3x3 depthwise seperable convolution (with normalization, dropout, and ReLU)
+        "M" is 2x2 maxpool
+        There are other things defined in model/net_builder.py
+    * "roi_batch_size": This tells it the max number of edge windows to ROI pool and pass through the CNN at once. Helps with memory on dense images
+
+    * "graph_config": This defines the GCNs. It is a list with a dictionary for each GCN
+        The GCN dictionary has the following parameters:
+        * "arch": Mostly whether your using the GCN (MetaGraphNet) or non-GCN (BinaryPairReal)
+        * "in_channels": Input and hidden size
+        * "node_out": number of node predictions (conf,header,question,answer,other)
+        * "edge_out": number of edge predictions (prune,relationship,merge,group,?)
+        * "num_layers": number of GCN layers (GN block) - 1. I forgot that there is an automatic first GCN layer added, which is why the configs all have the n-1 GCN layers in their names as what it shown in the paper.
+        * "repetitions": I originally planned something like the "Universal Transformer", but that was a bad idea. This will cause it to run the [1:] GCN layers multiple times. The output of each iteration is supervised.
+        * "encode_type": How to aggregate the edges. use "attention"
+        * "num_heads": number of heads the attention uses
+        * "merge_thresh"/"group_thresh"/"keep_edge_thresh": The thresholds used for the graph edit after this GCN. We implement a 'keep edge' prediction instead of 'pruning' predcition as it says in the paper. It read better that way. 
+
+        For non-GCN
+        * "layers"/"layers_bb": fully connected network for edge and node respectively
+
+'''
+class FUDGE(BaseModel):
     def __init__(self, config):
-        super(PairingGroupingGraph, self).__init__(config)
+        super(FUDGE, self).__init__(config)
 
         #First load in the detector using the checkpoint
         if 'detector_checkpoint' in config:

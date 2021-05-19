@@ -2,7 +2,6 @@ import os, math
 import utils.img_f as img_f
 import struct
 import torch
-from . import string_utils
 
 
 def ensure_dir(path):

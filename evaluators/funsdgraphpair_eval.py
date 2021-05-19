@@ -6,7 +6,6 @@ import torch.nn.functional as F
 import utils.img_f as img_f
 from utils import util
 from utils.util import plotRect
-from model.alignment_loss import alignment_loss
 import math
 from model.loss import *
 from collections import defaultdict
