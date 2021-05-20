@@ -143,7 +143,6 @@ class FUDGE(BaseModel):
         else:
             detect_save2_scale = None
 
-        self.no_grad_feats = config['no_grad_feats'] if 'no_grad_feats' in config else False
 
         #whether to start the detector frozen
         if (config['start_frozen'] if 'start_frozen' in config else False):
@@ -182,8 +181,6 @@ class FUDGE(BaseModel):
         self.numTextFeats = 0 #no text
 
 
-        self.blind_during_gt = config['blind_during_gt'] if 'blind_during_gt' in config else None
-        self.no_text_during_no_gt = config['no_text_during_no_gt'] if 'no_text_during_no_gt' in config else None
 
         #Use collected detector paramters to build the GCN and all those little networks
         self.buildNet(config,detectorSavedFeatSize,detectorSavedFeatSize2,detect_save_scale,detect_save2_scale)
@@ -576,13 +573,13 @@ class FUDGE(BaseModel):
         #if we are reintroducing visual features at each GCN
         if type(self.reintroduce_features) is str and 'map' in self.reintroduce_features:
             #These maps are the transition layers
-            self.reintroduce_node_visual_maps = nn.ModuleList()
-            self.reintroduce_edge_visual_maps = nn.ModuleList()
-            self.reintroduce_node_visual_maps.append(nn.Linear(graph_in_channels,graph_in_channels))
-            self.reintroduce_edge_visual_maps.append(nn.Linear(graph_in_channels,graph_in_channels))
+            self.node_transition_layers = nn.ModuleList()
+            self.edge_transition_layers = nn.ModuleList()
+            self.node_transition_layers.append(nn.Linear(graph_in_channels,graph_in_channels))
+            self.edge_transition_layers.append(nn.Linear(graph_in_channels,graph_in_channels))
             for i in range(len(self.graphnets)-1):
-                self.reintroduce_node_visual_maps.append(nn.Linear(graph_in_channels*2,graph_in_channels))
-                self.reintroduce_edge_visual_maps.append(nn.Linear(graph_in_channels*2,graph_in_channels))
+                self.node_transition_layers.append(nn.Linear(graph_in_channels*2,graph_in_channels))
+                self.edge_transition_layers.append(nn.Linear(graph_in_channels*2,graph_in_channels))
             if 'fixed' in self.reintroduce_features:
                 #The proper activation things
                 self.reintroduce_node_visual_activations =nn.ModuleList()
@@ -593,8 +590,8 @@ class FUDGE(BaseModel):
                     self.reintroduce_node_visual_activations.append(nn.Sequential(nn.GroupNorm(getGroupSize(graph_in_channels),graph_in_channels),nn.LeakyReLU(0.01,True)))
                     self.reintroduce_edge_visual_activations.append(nn.Sequential(nn.GroupNorm(getGroupSize(graph_in_channels),graph_in_channels),nn.LeakyReLU(0.01,True)))
         else:
-            self.reintroduce_node_visual_maps = None
-            self.reintroduce_edge_visual_maps = None
+            self.node_transition_layers = None
+            self.edge_transition_layers = None
         
         #define that we just average features when grouping
         if 'group_node_method' not in config or config['group_node_method']=='mean':
@@ -721,6 +718,7 @@ class FUDGE(BaseModel):
         if self.useHardConfThresh:
             self.used_threshConf = self.detect_conf_thresh
         else:
+            #This isn't used
             maxConf = bbPredictions[:,:,0].max().item()
             if otherThreshIntur is None:
                 confThreshMul = self.detect_conf_thresh
@@ -733,44 +731,38 @@ class FUDGE(BaseModel):
 
 
 
-
+        #apply non maximal suppression to the detector results
         bbPredictions = non_max_sup_iou(bbPredictions.cpu(),self.used_threshConf,0.4,hard_detect_limit)
 
         #I'm assuming batch size of one
         assert(len(bbPredictions)==1)
         bbPredictions=bbPredictions[0]
-        if self.no_grad_feats:
-            bbPredictions=bbPredictions.detach()
 
 
         if useGTBBs and  gtBBs is not None:
+            #We'll fix up the gtBBs with some conf and class predictions
             useBBs, gtBBs, gtGroups, gt_to_new = self.alignGTBBs(useGTBBs,gtBBs,gtGroups,bbPredictions)
-            if self.training and self.blind_during_gt is not None and self.blind_during_gt>random.random():
-                saved_features = saved_features.new_zeros(saved_features.size())
-                if saved_features2 is not None:
-                    saved_features2 = saved_features2.new_zeros(saved_features2.size())
+
         else:
-            if bbPredictions.size(0)==0:
-                return [bbPredictions], offsetPredictions, None, None, None, None, None, None, (None,None,None,None)
             useBBs = bbPredictions
 
-        useBBs=useBBs.detach()
+        useBBs=useBBs.detach() #We probably don't want anything backproping here. The detector is supervised.
 
-        transcriptions=None
+        transcriptions=None #FUDGE doesn't use text
 
 
-        if len(useBBs):#useBBs.size(0)>1:
+        if len(useBBs): #Do we have any BBs?
             if transcriptions is not None:
                 embeddings = self.embedding_model(transcriptions,saved_features.device)
             else:
                 embeddings=None
 
 
-            if not self.useMetaGraph:
-                raise NotImplementedError('Simple pairing not implemented for new grouping stuff')
 
             bbTrans = transcriptions
 
+
+            #build the graph and run the GCN
             allOutputBoxes, allEdgeOuts, allEdgeIndexes, allNodeOuts, allGroups, rel_prop_scores,merge_prop_scores, final = self.runGraph(
                     gtGroups,
                     gtTrans,
@@ -780,30 +772,29 @@ class FUDGE(BaseModel):
                     saved_features2,
                     bbTrans,
                     embeddings,
-                    merge_first_only,
-                    zero_embeddings = self.training and not useGTBBs and self.no_text_during_no_gt is not None and self.no_text_during_no_gt>random.random())
+                    merge_first_only)
 
             return allOutputBoxes, offsetPredictions, allEdgeOuts, allEdgeIndexes, allNodeOuts, allGroups, rel_prop_scores,merge_prop_scores, final
 
         else:
+            #node BBs, no nodes, no graph
             return [bbPredictions], offsetPredictions, None, None, None, None, None, None, (useBBs.cpu().detach(),None,None,transcriptions)
 
 
-    #This ROIAligns features and creates mask images for each edge and node, and runs the embedding convnet and [appends?] these features to the graph... This is only neccesary if a node has been updated...
-    #perhaps we need a saved visual feature. If the node/edge is updated, it is recomputed. It is appended  to the graphs current features at each call of a GCN
+    #appends the visual features to the graph features, and then passes them through the transition layer to make the new graph features. First recomputes visual features for updated nodes and edges
     def appendVisualFeatures(self,
-            giter,
-            bbs,
-            graph,
-            groups,
-            edge_indexes,
-            features,
-            features2,
-            text_emb,
+            giter,                      #iteration # of GCN
+            bbs,                        #Tensor of bbs
+            graph,                      #Full graph
+            groups,                     #list of list of node indexes
+            edge_indexes,               #list of node index pairs
+            features,                   #visual features from backbone
+            features2,                  #other layer of visual features
+            text_emb,                   #nope
             image_height,
             image_width,
-            same_node_map,
-            prev_node_visual_feats,
+            same_node_map,              #A map between the previous nodes and the current ones
+            prev_node_visual_feats,     #the previous features so we can reuse them
             prev_edge_visual_feats,
             prev_edge_indexes,
             merge_only=False,
@@ -815,12 +806,16 @@ class FUDGE(BaseModel):
         #same_node_map, maps the old node id (index) to the new one
 
         node_visual_feats = torch.FloatTensor(node_features.size(0),prev_node_visual_feats.size(1)).to(node_features.device)
+
+        #Find out which nodes are unchanged
         has_feat = [False]*node_features.size(0)
         for old_id,new_id in same_node_map.items():
             has_feat[new_id]=True
             node_visual_feats[new_id] = prev_node_visual_feats[old_id]
 
+        
         if not all(has_feat):
+            #Redo the features for these nodes
             need_new_ids,need_groups = zip(* [(i,g) for i,(has,g) in enumerate(zip(has_feat,groups)) if not has])
             need_text_emb = None
             if len(need_new_ids)>0:
@@ -830,8 +825,11 @@ class FUDGE(BaseModel):
                     allMasks=self.makeAllMasks(image_height,image_width,bbs)
                 else:
                     allMasks=None
+
+                #compute the features
                 node_visual_feats[need_new_ids] = self.computeNodeVisualFeatures(features,features2,image_height,image_width,bbs,need_groups,need_text_emb,allMasks,merge_only,debug_image)
 
+        #now figure out which edges need updated (any touching an updated node)
         new_to_old_ids = {v:k for k,v in same_node_map.items()}
         edge_visual_feats = torch.FloatTensor(len(edge_indexes),prev_edge_visual_feats.size(1)).to(edge_features.device)
         need_edge_ids=[]
@@ -852,41 +850,46 @@ class FUDGE(BaseModel):
             else:
                 need_edge_ids.append(ei)
                 need_edge_node_ids.append((n0,n1))
+
         if len(need_edge_ids)>0:
+            #compute the features
             edge_visual_feats[need_edge_ids] = self.computeEdgeVisualFeatures(features,features2,image_height,image_width,bbs,groups,need_edge_node_ids,allMasks,flip,merge_only,debug_image)
 
-        #for now, we'll just sum the features.
-        #new_graph = (torch.cat((node_features,node_visual_feats),dim=1),edge_indexes,torch.cat((edge_features,edge_visual_feats),dim=1),universal_features)
         if self.reintroduce_features=='fixed map':
+            #This is what FUDGE does
+
+            #First, the graph features are un-activated, so activate them
             node_features_old=self.reintroduce_node_visual_activations[giter](node_features)
             edge_features_old=self.reintroduce_edge_visual_activations[giter](edge_features)
+            #concat and transition
             cat_node_f = torch.cat((node_features_old,node_visual_feats),dim=1)
-            node_features = self.reintroduce_node_visual_maps[giter](cat_node_f)
+            node_features = self.node_transition_layers[giter](cat_node_f)
+
+            #for the graph, we will have the visual features duplicated
             if edge_features.size(1)==0:
                 edge_features = edge_visual_feats
-                #assert(edge_features.size(0)==0 or edge_features.max()<900)
             elif edge_features.size(0)==edge_visual_feats.size(0)*2:
-                edge_features = self.reintroduce_edge_visual_maps[giter](torch.cat((edge_features_old,edge_visual_feats.repeat(2,1)),dim=1))
-                #assert(edge_features.size(0)==0 or edge_features.max()<900)
-
+                #we need to repeat them
+                edge_features = self.edge_transition_layers[giter](torch.cat((edge_features_old,edge_visual_feats.repeat(2,1)),dim=1))
             else:
-                edge_features = self.reintroduce_edge_visual_maps[giter](torch.cat((edge_features_old,edge_visual_feats),dim=1))
-                #assert(edge_features.size(0)==0 or edge_features.max()<900)
-            #assert(node_features.max()<900)
+                #don't need repeated
+                edge_features = self.edge_transition_layers[giter](torch.cat((edge_features_old,edge_visual_feats),dim=1))
             
         elif self.reintroduce_features=='map':
+            #old
             node_features_old=node_features
             edge_features_old=edge_features
             cat_node_f = torch.cat((node_features_old,node_visual_feats),dim=1)
-            node_features = self.reintroduce_node_visual_maps[giter](cat_node_f)
+            node_features = self.node_transition_layers[giter](cat_node_f)
             if edge_features.size(1)==0:
                 edge_features = edge_visual_feats
             elif edge_features.size(0)==edge_visual_feats.size(0)*2:
-                edge_features = self.reintroduce_edge_visual_maps[giter](torch.cat((edge_features_old,edge_visual_feats.repeat(2,1)),dim=1))
+                edge_features = self.edge_transition_layers[giter](torch.cat((edge_features_old,edge_visual_feats.repeat(2,1)),dim=1))
 
             else:
-                edge_features = self.reintroduce_edge_visual_maps[giter](torch.cat((edge_features_old,edge_visual_feats),dim=1))
+                edge_features = self.edge_transition_layers[giter](torch.cat((edge_features_old,edge_visual_feats),dim=1))
         else:
+            #simple sum
             node_features += node_visual_feats
             if edge_features.size(1)==0:
                 edge_features = edge_visual_feats
@@ -895,8 +898,8 @@ class FUDGE(BaseModel):
             else:
                 edge_features = edge_features+edge_visual_feats
         
+
         new_graph = (node_features,_edge_indexes,edge_features,universal_features)
-        #edge features get repeated for bidirectional graph
         return new_graph, node_visual_feats, edge_visual_feats
 
     #This rewrites the confidence and class predictions based on the (re)predictions from the graph network
@@ -924,8 +927,6 @@ class FUDGE(BaseModel):
 
     #This merges two bounding box predictions, assuming they were oversegmented
     def mergeBB(self,bb0,bb1):
-        #Get encompassing rectangle for actual bb
-        #REctify curved line for ATR
 
         if self.rotation:
             raise NotImplementedError('Rotation not implemented for merging bounding boxes')
@@ -961,37 +962,35 @@ class FUDGE(BaseModel):
 
 
     #Use the graph network's predictions to merge oversegmented detections and group nodes into a single node
+    #This is a rather confusing piece of code. I'm sorry
     def mergeAndGroup(self,
             mergeThresh,
             keepEdgeThresh,
             groupThresh,
-            oldEdgeIndexes,
-            edgePredictions,
-            oldGroups,
-            oldNodeFeats,
-            oldEdgeFeats,
-            oldUniversalFeats,
-            oldBBs,
-            oldBBTrans,
-            old_text_emb,
-            image,
-            skip_rec=False,
-            merge_only=False,
+            oldEdgeIndexes,     #old meaning the ones we will update. List of node index pairs
+            edgePredictions,    #output of GCN edges
+            oldGroups,          #list of list of node indexes
+            oldNodeFeats,       #GCN node features
+            oldEdgeFeats,       #GCN edge features
+            oldUniversalFeats,  #none of these
+            oldBBs,             #the bounding boxes
+            oldBBTrans,         #nope
+            old_text_emb,       #nope
+            merge_only=False,   #for merge-only step, unused
             good_edges=None,
             keep_edges=None,
-            gt_groups=None,
-            final=False):
+            gt_groups=None,     #for DocStruct comparison
+            final=False         #if this is the final edit, use relationship prediction to prune edges
+            ):
         assert(oldNodeFeats is None or oldGroups is None or oldNodeFeats.size(0)==len(oldGroups))
         oldNumGroups=len(oldGroups)
-        #changedNodeIds=set()
         oldBBs=oldBBs.cpu()
         bbs={i:v for i,v in enumerate(oldBBs)}
         bbTrans=None
         oldToNewBBIndexes={i:i for i in range(len(oldBBs))}
-        #newBBs_line={}
         newBBIdCounter=0
-        #toMergeBBs={}
         if not merge_only:
+            #Run predictions through sigmoid
             if not final:
                 edgePreds = torch.sigmoid(edgePredictions[:,-1,0]).cpu().detach() #keep edge pred
             else:
@@ -999,7 +998,7 @@ class FUDGE(BaseModel):
             mergePreds = torch.sigmoid(edgePredictions[:,-1,2]).cpu().detach()
             groupPreds = torch.sigmoid(edgePredictions[:,-1,3]).cpu().detach()
             if gt_groups:
-                #just rewrite the predictions
+                #just rewrite the predictions to match the GT groups
                 gt_groups_map={}
                 for i,group in enumerate(gt_groups):
                     for n in group:
@@ -1013,20 +1012,19 @@ class FUDGE(BaseModel):
             mergePreds = torch.sigmoid(edgePredictions[:,-1,0]).cpu().detach()
 
         if gt_groups is not None:
-            mergeThresh=6
+            mergeThresh=6 #In DocStruct eval we're also using GT line bbs, so we shouldn't need to merge
 
         mergedTo=set()
         #check for merges, where we will combine two BBs into one
         for i,(n0,n1) in enumerate(oldEdgeIndexes):
-            #mergePred = edgePreds[i,-1,1]
+            #n0 and n1 are the node indexes
+            #i is the edge index
             
-            if mergePreds[i]>mergeThresh: #TODO condition this on whether it is correct. and GT?:
-                if self.training and random.random()<0.001: #randomly don't merge for robustness in training
+            if mergePreds[i]>mergeThresh: 
+                if self.training and random.random()<0.001: #randomly don't merge for robustness in training. 0.001 is pretty small, but this was with oversegmented (Word-FUDGE) training in mind
                     continue
 
                 if len(oldGroups[n0])==1 and len(oldGroups[n1])==1: #can only merge ungrouped nodes. This assumption is used later in the code WXS
-                    #changedNodeIds.add(n0)
-                    #changedNodeIds.add(n1)
                     bbId0 = oldGroups[n0][0]
                     bbId1 = oldGroups[n1][0]
                     newId0 = oldToNewBBIndexes[bbId0]
@@ -1036,6 +1034,7 @@ class FUDGE(BaseModel):
                     bb1ToMerge = bbs[newId1]
 
                     if self.prevent_vert_merges:
+                        #This is not used
                         #This will introduce slowdowns as we are computing each partail merge instead of waiting till all merges are found
                         angle = (bb0ToMerge.medianAngle()+bb1ToMerge.medianAngle())/2
                         h0 = bb0ToMerge.getHeight()
@@ -1043,17 +1042,12 @@ class FUDGE(BaseModel):
                         h1 = bb1ToMerge.getHeight()
                         r1 = bb1ToMerge.getReadPosition(angle)
                         
-                        #if they are horz (read orientation) offset too much (half height), don't merge
-                        #x,y = bb0ToMerge.getCenterPoint()
-                        #if y>990 and y<1110 and x>800 and x<1380:
-                        #    print('{},{}    h0={}, h1={}, r0={}, r1={}, D: {}'.format(int(x),int(y),h0,h1,r0,r1,abs(r0-r1)<(h0+h1)/4))
-                        #    print('rot0={}, rot1={}'.format(bb0ToMerge.medianAngle(),bb1ToMerge.medianAngle()))
                         if abs(r0-r1)>(h0+h1)/4:
                             continue
 
 
 
-                    if newId0!=newId1:
+                    if newId0!=newId1: #if these haven't been merged already (due to chain merges)
                         bbs[newId0]= self.mergeBB(bb0ToMerge,bb1ToMerge)
                         #merge two merged bbs
                         oldToNewBBIndexes = {k:(v if v!=newId1 else newId0) for k,v in oldToNewBBIndexes.items()}
@@ -1064,8 +1058,6 @@ class FUDGE(BaseModel):
                         self.merges_performed+=1
 
 
-        oldBBIdToNew = oldToNewBBIndexes
-                
 
         if merge_only:
             newBBs=[]
@@ -1075,17 +1067,21 @@ class FUDGE(BaseModel):
             return newBBs, newBBTrans
 
         #rewrite groups with merged instances
-        assignedGroup={} #this will allow us to remove merged instances
-        oldGroupToNew={}
-        workGroups =  {}#{i:v for i,v in enumerate(oldGroups)}
+        assignedGroup={} #This points a bb to its (new) group. This will allow us to remove merged instances
+        oldGroupToNew={} #id map
+        workGroups =  {} #This stores the new groups
         changedGroups = []
+        #We reuse the same ids as we can only get less groups
         for id,bbIds in enumerate(oldGroups):
-            newGroup = [oldBBIdToNew[oldId] for oldId in bbIds]
-            if len(newGroup)==1 and newGroup[0] in assignedGroup: #WXS
+            #rewrite the bb ids
+            newGroup = [oldToNewBBIndexes[oldId] for oldId in bbIds]
+            if len(newGroup)==1 and newGroup[0] in assignedGroup: #WXS assuming only single bbs can merge
+                #id is merged and my group is already assigned, so add id to the group
                 oldGroupToNew[id]=assignedGroup[newGroup[0]]
                 changedGroups.append(newGroup[0])
                 #nothing else needs done, since the group has the ID,
             else:
+                #assign the nodes to the group id (no change)
                 workGroups[id] = newGroup
                 for bbId in newGroup:
                     assignedGroup[bbId]=id
@@ -1094,23 +1090,17 @@ class FUDGE(BaseModel):
         for k,v in oldGroupToNew.items():
             newGroupToOldMerge[v].append(k)
 
-        #D#
-        for i in range(oldNumGroups):
-            assert(i in oldGroupToNew or i in workGroups)
 
         #We'll adjust the edges to acount for merges as well as prune edges and get ready for grouping
-        #temp = oldEdgeIndexes
-        #oldEdgeIndexes = []
 
         #Prune and adjust the edges (to groups)
         groupEdges=[]
 
-        D_numOldEdges=len(oldEdgeIndexes)
-        D_numOldAboveThresh=(edgePreds>keepEdgeThresh).sum()
         prunedOldEdgeIndexes=[]
         for i,(n0,n1) in enumerate(oldEdgeIndexes):
             if ((keep_edges is not None and i in keep_edges) or 
                     edgePreds[i]>keepEdgeThresh):
+                #great, it's above the prune threshold
                 old_n0=n0
                 old_n1=n1
                 if n0 in oldGroupToNew:
@@ -1118,52 +1108,37 @@ class FUDGE(BaseModel):
                 if n1 in oldGroupToNew:
                     n1 = oldGroupToNew[n1]
 
-                assert(n0 in workGroups and n1 in workGroups)
                 if n0!=n1:
-                    #oldEdgeIndexes.append((n0,n1))
                     groupEdges.append((groupPreds[i].item(),n0,n1))
                 #else:
-                #    It disapears
+                #    It disapears. If the nodes are the same node now, no edge exists
                 prunedOldEdgeIndexes.append((i,old_n0,old_n1))
-            #else: #D#
-            #    old_n0=n0
-            #    old_n1=n1
-            #    if n0 in oldGroupToNew:
-            #        n0 = oldGroupToNew[n0]
-            #    if n1 in oldGroupToNew:
-            #        n1 = oldGroupToNew[n1]
-            #    print('pruned [{},{}] n([{},{}])'.format(old_n0,old_n1,n0,n1))
-
-        #print('!D! original edges:{}, above thresh:{}, kept edges:{}'.format(D_numOldEdges,D_numOldAboveThresh,len(groupEdges)))
              
 
 
 
         #Find nodes that should be grouped
         ##NEWER, just merge the groups with the highest score between them. when merging edges, sum the scores
-        #newNodeFeats = {i:[oldNodeFeats[i]] for i in range(oldNodeFeats.size(0))}
-        oldGroupToNewGrouping = {i:i for i in workGroups.keys()}
+        oldGroupToNewGrouping = {i:i for i in workGroups.keys()} #a map so we can se which nodes were grouped
         while len(groupEdges)>0:
-            groupEdges.sort(key=lambda x:x[0])
+            groupEdges.sort(key=lambda x:x[0]) #we do greedy grouping. Although I don't think order matters
             score, g0, g1 = groupEdges.pop()
             assert(g0!=g1)
             if score<groupThresh:
+                #no grouping, we add this edge back as we use the leftover list
                 groupEdges.append((score, g0, g1))
                 break
             
             new_g0 = oldGroupToNewGrouping[g0]
             new_g1 = oldGroupToNewGrouping[g1]
-            if new_g0!=new_g1:
-                workGroups[new_g0] += workGroups[new_g1]
+            if new_g0!=new_g1: #if these are not already in the same group
+                workGroups[new_g0] += workGroups[new_g1] #merge node ids
                 oldGroupToNewGrouping = {k:(v if v!=new_g1 else new_g0) for k,v in oldGroupToNewGrouping.items()}
 
                 del workGroups[new_g1]
 
 
 
-        #D#
-        for i in range(oldNumGroups):
-            assert(i in oldGroupToNewGrouping or i in oldGroupToNew)
 
 
         if gt_groups is not None:
@@ -1200,19 +1175,6 @@ class FUDGE(BaseModel):
                         oldGroupToNewGrouping = {k:(v if v!=new_g else root_new_g) for k,v in oldGroupToNewGrouping.items()}
                         del workGroups[new_g]
 
-            #recheck
-            for gg in gt_groups:
-                match_found=False
-                for id,group in workGroups.items():
-                    is_match=True
-                    for bb in gg:
-                        if bb not in group:
-                            is_match=False
-                            break
-                    if is_match:
-                        match_found=True
-                        break
-                assert match_found
 
 
         #Actually change bbs to list,  we'll adjusting appropriate values in groups as we convert groups to list
@@ -1268,12 +1230,10 @@ class FUDGE(BaseModel):
 
 
 
-        assert(all([x in oldToNewIds_all for x in range(oldNumGroups)]))
 
         
         #find overlapped edges and combine
         #first change all node ids to their new ones
-        D_newToOld = {v:k for k,v in oldToNewNodeIds_unchanged.items()}
         newEdges_map=defaultdict(list)
         for i,n0,n1  in  prunedOldEdgeIndexes:
             new_n0 = oldToNewIds_all[n0]
@@ -1281,11 +1241,6 @@ class FUDGE(BaseModel):
             if new_n0 != new_n1:
                 newEdges_map[(min(new_n0,new_n1),max(new_n0,new_n1))].append(i)
 
-            #D#
-            if new_n0 in D_newToOld and new_n1 in D_newToOld:
-                o0 = D_newToOld[new_n0]
-                o1 = D_newToOld[new_n1]
-                assert( (min(o0,o1),max(o0,o1)) in oldEdgeIndexes )
         #This leaves some old edges pointing to the same new edge, so combine their features
         newEdges=[]
         if oldEdgeFeats is not None:
@@ -1322,15 +1277,6 @@ class FUDGE(BaseModel):
 
         newGraph = (newNodeFeats, newEdgeIndexes, newEdgeFeats, oldUniversalFeats)
 
-        ###DEBUG###
-        newToOld = {v:k for k,v in oldToNewNodeIds_unchanged.items()}
-        for n0,n1 in edges:
-            if n0 in newToOld and n1 in newToOld:
-                o0 = newToOld[n0]
-                o1 = newToOld[n1]
-                assert( (min(o0,o1),max(o0,o1)) in oldEdgeIndexes )
-        #print('!D! final edges: {}'.format(len(edges)))
-        ##D###
 
         newBBs = torch.stack(newBBs,dim=0)
 
@@ -1356,10 +1302,7 @@ class FUDGE(BaseModel):
         if len(candidates)==0:
             if merge_only:
                 return None,None,None
-            if self.useMetaGraph:
-                return None, None, None, None, None, None
-            else:
-                return None,None,None,None,None, None, None
+            return None, None, None, None, None, None
         if self.training:
             random.shuffle(candidates)
 
@@ -1379,111 +1322,50 @@ class FUDGE(BaseModel):
         #print('------rel------')
         if merge_only:
             return edge_vis_features, candidates, rel_prop_scores #we won't build the graph
-        if self.reintroduce_edge_visual_maps is not None:
-            rel_features = self.reintroduce_edge_visual_maps[0](edge_vis_features) #this is an extra linear layer to prep the features for the graph (which expects non-activated values)
+        if self.edge_transition_layers is not None:
+            rel_features = self.edge_transition_layers[0](edge_vis_features) #this is an extra linear layer to prep the features for the graph (which expects non-activated values)
         else:
             rel_features = edge_vis_features
     
         #compute features for the bounding boxes by themselves
         node_vis_features = self.computeNodeVisualFeatures(features,features2,imageHeight,imageWidth,bbs,groups,text_emb,allMasks,merge_only,debug_image)
-        if self.reintroduce_node_visual_maps is not None:
+        if self.node_transition_layers is not None:
             #print('node_vis_features: {}'.format(node_vis_features.size()))
             if node_vis_features.size(0)==0:
                 print(node_vis_features.size())
             try:
-                bb_features = self.reintroduce_node_visual_maps[0](node_vis_features) #this is an extra linear layer to prep the features for the graph (which expects non-activated values)
+                bb_features = self.node_transition_layers[0](node_vis_features) #this is an extra linear layer to prep the features for the graph (which expects non-activated values)
             except RuntimeError as e:
                 print('text_emb = {}'.format(text_emb))
-                print('node_vis_features: {}, layer: {}'.format(node_vis_features.size(),self.reintroduce_node_visual_maps[0]))
+                print('node_vis_features: {}, layer: {}'.format(node_vis_features.size(),self.node_transition_layers[0]))
                 raise e
         else:
             bb_features = node_vis_features
-        #rint('node features built')
-        #print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=10))
-        #print('------node------')
-        
-        #We're not adding diagonal (self-rels) here!
-        #Expecting special handeling during graph conv
-        #candidateLocs = torch.LongTensor(candidates).t().to(relFeats.device)
-        #ones = torch.ones(len(candidates)).to(relFeats.device)
-        #adjacencyMatrix = torch.sparse.FloatTensor(candidateLocs,ones,torch.Size([bbs.size(0),bbs.size(0)]))
 
-        #assert(relFeats.requries_grad)
-        #rel_features = torch.sparse.FloatTensor(candidateLocs,relFeats,torch.Size([bbs.size(0),bbs.size(0),relFeats.size(1)]))
-        #assert(rel_features.requries_grad)
         relIndexes=candidates
         numBB = len(bbs)
         numRel = len(candidates)
-        if self.useMetaGraph:
-            nodeFeatures= bb_features
-            edgeFeatures= rel_features
-            edges=candidates
 
-            edges += [(y,x) for x,y in edges] #add backward edges for undirected graph
-            edgeIndexes = torch.LongTensor(edges).t().to(rel_features.device)
-            #now we need to also replicate the edgeFeatures
-            edgeFeatures = edgeFeatures.repeat(2,1)
+        nodeFeatures= bb_features
+        edgeFeatures= rel_features
+        edges=candidates
 
-            #features
-            universalFeatures=None
+        edges += [(y,x) for x,y in edges] #add backward edges to make graph bidirectional
+        edgeIndexes = torch.LongTensor(edges).t().to(rel_features.device)
+        #now we need to also replicate the edgeFeatures
+        edgeFeatures = edgeFeatures.repeat(2,1)
 
-            
-            #print('   create graph: {}'.format(time)) #old 0.37, new 0.16
-            ##self.opt_createG.append(time)
-            
-            
-            
-            
-            return (nodeFeatures, edgeIndexes, edgeFeatures, universalFeatures), relIndexes, rel_prop_scores, node_vis_features,edge_vis_features, keep_edges
-        else:
-            if bb_features is None:
-                numBB=0
-                bbAndRel_features=relFeats
-                adjacencyMatrix = None
-                numOfNeighbors = None
-            else:
-                bbAndRel_features = torch.cat((bb_features,relFeats),dim=0)
-                numOfNeighbors = torch.ones(len(bbs)+len(candidates)) #starts at one for yourself
-                edges=[]
-                i=0
-                for bb1,bb2 in candidates:
-                    edges.append( (bb1,numBB+i) )
-                    edges.append( (bb2,numBB+i) )
-                    numOfNeighbors[bb1]+=1
-                    numOfNeighbors[bb2]+=1
-                    numOfNeighbors[numBB+i]+=2
-                    i+=1
-                if self.includeRelRelEdges:
-                    relEdges=set()
-                    i=0
-                    for bb1,bb2 in candidates:
-                        j=0
-                        for bbA,bbB in candidates[i:]:
-                            if i!=j and bb1==bbA or bb1==bbB or bb2==bbA or bb2==bbB:
-                                relEdges.add( (numBB+i,numBB+j) ) #i<j always
-                            j+=1   
-                        i+=1
-                    relEdges = list(relEdges)
-                    for r1, r2 in relEdges:
-                        numOfNeighbors[r1]+=1
-                        numOfNeighbors[r2]+=1
-                    edges += relEdges
-                #add reverse edges
-                edges+=[(y,x) for x,y in edges]
-                #add diagonal (self edges)
-                for i in range(bbAndRel_features.size(0)):
-                    edges.append((i,i))
+        universalFeatures=None
 
-                edgeLocs = torch.LongTensor(edges).t().to(relFeats.device)
-                ones = torch.ones(len(edges)).to(relFeats.device)
-                adjacencyMatrix = torch.sparse.FloatTensor(edgeLocs,ones,torch.Size([bbAndRel_features.size(0),bbAndRel_features.size(0)]))
-                #numOfNeighbors is for convienence in tracking the normalization term
-                numOfNeighbors=numOfNeighbors.to(relFeats.device)
-
-            #rel_features = (candidates,relFeats)
-            #adjacencyMatrix = None
-
-            return bbAndRel_features, (adjacencyMatrix,numOfNeighbors), numBB, numRel, relIndexes, rel_prop_scores, keep_edges
+        
+        return (
+                (nodeFeatures, edgeIndexes, edgeFeatures, universalFeatures), #the whole graph
+                relIndexes, #the unduplicated edges
+                rel_prop_scores, #to supervise the proposal network
+                node_vis_features, #to reuse visual features
+                edge_vis_features, #to reuse visual features
+                keep_edges #not used
+               )
 
     def makeAllMasks(self,imageHeight,imageWidth,bbs,merge_only=False):
         bbs=bbs[:,1:] #remove conf
@@ -2623,10 +2505,8 @@ class FUDGE(BaseModel):
 
 
 
-    def runGraph(self,gtGroups,gtTrans,image,useBBs,saved_features,saved_features2,bbTrans,embeddings,merge_first_only=False,zero_embeddings=False):
+    def runGraph(self,gtGroups,gtTrans,image,useBBs,saved_features,saved_features2,bbTrans,embeddings,merge_first_only=False):
 
-        if zero_embeddings:
-            embeddings=embeddings.new_zeros(embeddings.size())
         
         groups=[[i] for i in range(len(useBBs))]
         if self.merge_first:
@@ -2668,8 +2548,6 @@ class FUDGE(BaseModel):
                         useBBs,
                         bbTrans,
                         embeddings,
-                        image,
-                        skip_rec=merge_first_only,
                         merge_only=True)
                 #This mergeAndGroup performs first ATR
                 
@@ -2692,8 +2570,6 @@ class FUDGE(BaseModel):
                     justBBs = useBBs[:,1:]
                     bbTrans=correctTrans(bbTrans,justBBs,gtTrans,gtBBs)
                 embeddings = self.embedding_model(bbTrans,saved_features.device)
-                if zero_embeddings:
-                    embeddings=embeddings.new_zeros(embeddings.size())
             else:
                 embeddings=None
         else:
@@ -2758,12 +2634,9 @@ class FUDGE(BaseModel):
                     useBBs,
                     bbTrans,
                     embeddings,
-                    image,
                     good_edges=good_edges,
                     keep_edges=keep_edges,
                     gt_groups=gtGroups if gIter==0 else ([[g] for g in range(len(groups))] if gtGroups is not None else None))
-            if zero_embeddings:
-                embeddings=embeddings.new_zeros(embeddings.size())
 
 
             if self.reintroduce_features:
@@ -2816,7 +2689,6 @@ class FUDGE(BaseModel):
                 useBBs,
                 bbTrans,
                 None,
-                image,
                 gt_groups=[[g] for g in range(len(groups))] if gtGroups is not None else None,
                 final=True)
         #print('!D! after  edge size: {}, bbs: {}, node size: {}, edge I size: {}'.format(graph[2].size(),useBBs.size(),graph[0].size(),len(edgeIndexes)))

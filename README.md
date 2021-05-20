@@ -24,6 +24,7 @@ Eventually I'll get the weights added as a release.
 
 ### Dataset 
 NAF see https://github.com/herobd/NAF_dataset
+
 FUNSD see https://guillaumejaume.github.io/FUNSD/
 
 The configs expect the datasets to be at `../data/NAF_dataset/` and `../data/FUNSD/`
@@ -48,7 +49,7 @@ The ablation uses the following configs:
 #### Wait, how long does this take to train?
 If trained to the full 700,000 iterations, it takes a couple weeks, depending on your GPU. I used a batch size of 1 due to hardware limitations. I also hard-coded the batch size of 1, so you have to as well (GCNs handle batches specially and I didn't want to code that up).
 
-However, from an experiment I ran, I think you can get the same results with only 250,000 iterations by accumulating the gradient to pretend a batch size of 5. This is done with by adding `"accum_grad_steps": 5` to `trainer` in the config json. Yes, that means it only updates the weights 50,000 times.
+However, from an experiment I ran, I think you can get the same results with only 250,000 iterations by accumulating the gradient to pretend a batch size of 5. This is done by adding `"accum_grad_steps": 5` to `trainer` in the config json. Yes, that means it only updates the weights 50,000 times.
 
 ### Evaluating
 
@@ -92,13 +93,16 @@ The only flags required is `-c` or `-f`.
 
 If `-T` is ommited it will run on the validation set instead of the test set.
 
+If you want it to generate images (like in the paper), use both the `-d` and `-n` flags.
+
 There is an additional `-a` flag which allows overwriting of specific values of the config file using this format `key1=nestedkey=value,key2=value`. It also allows setting these special options (which are part of config):
 
 Evaluating detector:
-* `-a pretty=true`: Makes printed pictured cleaner (less details)
+* `-a pretty=true`: Makes printed picture cleaner (less details)
 
 Evaluatring pairing:
 * `-a useDetect=True|word_bbs`:  Whether to use GT detection line boxes or word boxes
+* `-a gtGroups=True`: Force use of GT groupings (for DocStruct comparison)
 * `-a draw_verbosity=0-3`: Different ways of displaying the results.
 
 ## File Structure
