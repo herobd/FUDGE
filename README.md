@@ -22,7 +22,7 @@ Eventually I'll get the weights added as a release.
 ## Reproducability instructions
 
 
-### Dataset 
+### Datasets
 NAF see https://github.com/herobd/NAF_dataset
 
 FUNSD see https://guillaumejaume.github.io/FUNSD/
@@ -42,9 +42,11 @@ Word-FUDGE: `python train.py -c cf_FUNSDWords_pair_graph663rv_new.json`
 NAF: `python train.py -c cf_NAF_pair_graph663rv_new.json`
 
 The ablation uses the following configs:
+* cf_FUNSDLines_pair_binary333rv_new.json
 * cf_FUNSDLines_pair_graph9rv_ablate.json
 * cf_FUNSDLines_pair_graph77rv_ablate.json
 * cf_FUNSDLines_pair_graph222rv_ablate.json
+* cf_NAF_pair_binary333rv_new.json
 
 #### Wait, how long does this take to train?
 If trained to the full 700,000 iterations, it takes a couple weeks, depending on your GPU. I used a batch size of 1 due to hardware limitations. I also hard-coded the batch size of 1, so you have to as well (GCNs handle batches specially and I didn't want to code that up).

@@ -34,7 +34,7 @@ def groupRect(corners):
 '''
 This defines the FUDGE model
 
-It's hyper-parameters are specified by the config dictionary. I'll list it's important options here. If it isn't listed here, you should probably just leave what's in the config.
+Its hyper-parameters are specified by the config dictionary. I'll list it's important options here. If it isn't listed here, you should probably just leave what's in the config.
 
     * "detector_checkpoint": this is a path to the checkpoint. It will read the detectors config information to build the backbone for FUDGE
     * "detector_config": You can alternately give the detector config dictionary. This is the same as in the configuration file, only it also needs the "arch" in this one.
@@ -61,8 +61,8 @@ It's hyper-parameters are specified by the config dictionary. I'll list it's imp
         * "arch": Mostly whether your using the GCN (MetaGraphNet) or non-GCN (BinaryPairReal)
         * "in_channels": Input and hidden size
         * "node_out": number of node predictions (conf,header,question,answer,other)
-        * "edge_out": number of edge predictions (prune,relationship,merge,group,?)
-        * "num_layers": number of GCN layers (GN block) - 1. I forgot that there is an automatic first GCN layer added, which is why the configs all have the n-1 GCN layers in their names as what it shown in the paper.
+        * "edge_out": number of edge predictions (prune,relationship,merge,group,error) #oh, I don't mention this in the paper, the model is also supervised to predict if the node is bad due to a bad merge or grouping. This was intended to allow some post processing, but I never used it.
+        * "num_layers": number of GCN layers (GN block) - 1. I forgot until writing the paper that there is an automatic first GCN layer added, which is why the configs all have the n-1 GCN layers in their names as what it shown in the paper.
         * "repetitions": I originally planned something like the "Universal Transformer", but that was a bad idea. This will cause it to run the [1:] GCN layers multiple times. The output of each iteration is supervised.
         * "encode_type": How to aggregate the edges. use "attention"
         * "num_heads": number of heads the attention uses
@@ -798,7 +798,6 @@ class FUDGE(BaseModel):
             prev_edge_visual_feats,
             prev_edge_indexes,
             merge_only=False,
-            debug_image=None,
             good_edges=None,
             flip=None):
 
@@ -827,7 +826,7 @@ class FUDGE(BaseModel):
                     allMasks=None
 
                 #compute the features
-                node_visual_feats[need_new_ids] = self.computeNodeVisualFeatures(features,features2,image_height,image_width,bbs,need_groups,need_text_emb,allMasks,merge_only,debug_image)
+                node_visual_feats[need_new_ids] = self.computeNodeVisualFeatures(features,features2,image_height,image_width,bbs,need_groups,need_text_emb,allMasks,merge_only)
 
         #now figure out which edges need updated (any touching an updated node)
         new_to_old_ids = {v:k for k,v in same_node_map.items()}
@@ -853,7 +852,7 @@ class FUDGE(BaseModel):
 
         if len(need_edge_ids)>0:
             #compute the features
-            edge_visual_feats[need_edge_ids] = self.computeEdgeVisualFeatures(features,features2,image_height,image_width,bbs,groups,need_edge_node_ids,allMasks,flip,merge_only,debug_image)
+            edge_visual_feats[need_edge_ids] = self.computeEdgeVisualFeatures(features,features2,image_height,image_width,bbs,groups,need_edge_node_ids,allMasks,flip,merge_only)
 
         if self.reintroduce_features=='fixed map':
             #This is what FUDGE does
@@ -1118,8 +1117,7 @@ class FUDGE(BaseModel):
 
 
         #Find nodes that should be grouped
-        ##NEWER, just merge the groups with the highest score between them. when merging edges, sum the scores
-        oldGroupToNewGrouping = {i:i for i in workGroups.keys()} #a map so we can se which nodes were grouped
+        oldGroupToNewGrouping = {i:i for i in workGroups.keys()} #a map so we can see which nodes were grouped
         while len(groupEdges)>0:
             groupEdges.sort(key=lambda x:x[0]) #we do greedy grouping. Although I don't think order matters
             score, g0, g1 = groupEdges.pop()
@@ -1194,23 +1192,26 @@ class FUDGE(BaseModel):
             newNodeFeats = torch.FloatTensor(len(workGroups),oldNodeFeats.size(1)).to(oldNodeFeats.device)
         else:
             newNodeFeats = None
+
         if old_text_emb is not None:
             new_text_emb = torch.FloatTensor(len(workGroups),old_text_emb.size(1)).to(old_text_emb.device)
         else:
-            new_text_emb = None
+            new_text_emb = NoneA
+
+        #gather the node features than need combined
         oldToNewNodeIds_unchanged={}
         oldToNewIds_all={}
         newGroups=[]
         groupNodeTrans=[]
-        for i,(idx,bbIds) in enumerate(workGroups.items()):
+        for i,(idx,bbIds) in enumerate(workGroups.items()):  #for each new group
             newGroups.append([bbIdToPos[bbId] for bbId in bbIds])
             featsToCombine=[]
             embeddings_to_combine=[]
-            for oldNodeIdx in newGroupToOldGrouping[idx]:
+            for oldNodeIdx in newGroupToOldGrouping[idx]: #for each node in that group
                 oldToNewIds_all[oldNodeIdx]=i
                 featsToCombine.append(oldNodeFeats[oldNodeIdx] if oldNodeFeats is not None else None)
                 embeddings_to_combine.append(old_text_emb[oldNodeIdx] if old_text_emb is not None else None)
-                if oldNodeIdx in newGroupToOldMerge:
+                if oldNodeIdx in newGroupToOldMerge: #if the node was merged, get it's merged node features
                     for mergedIdx in newGroupToOldMerge[oldNodeIdx]:
                         featsToCombine.append(oldNodeFeats[mergedIdx] if oldNodeFeats is not None else None)
                         embeddings_to_combine.append(old_text_emb[mergedIdx] if old_text_emb is not None else None)
@@ -1224,7 +1225,7 @@ class FUDGE(BaseModel):
                     new_text_emb[i]=embeddings_to_combine[0]
             else:
                 if oldNodeFeats is not None:
-                    newNodeFeats[i]=self.groupNodeFunc(featsToCombine)
+                    newNodeFeats[i]=self.groupNodeFunc(featsToCombine) #average them gether
                 if new_text_emb is not None:
                     new_text_emb[i]=torch.stack(embeddings_to_combine,dim=0).mean(dim=0)
 
@@ -1250,11 +1251,13 @@ class FUDGE(BaseModel):
         if keep_edges is not None:
             old_keep_edges=keep_edges
             keep_edges=set()
-        for edge,oldIds in newEdges_map.items():
+        for edge,oldIds in newEdges_map.items(): #for each new edge
             if oldEdgeFeats is not None:
                 if len(oldIds)==1:
+                    #no combining needed
                     newEdgeFeats[len(newEdges)]=oldEdgeFeats[oldIds[0]]
                 else:
+                    #average the edge features together
                     newEdgeFeats[len(newEdges)]=self.groupEdgeFunc([oldEdgeFeats[oId] for oId in oldIds])
             if keep_edges is not None:
                 if any([oId in old_keep_edges for oId in oldIds]):
@@ -1263,9 +1266,10 @@ class FUDGE(BaseModel):
 
 
 
-
+        #put together the new (full) graph
         edges = newEdges
         newEdges = list(newEdges) + [(y,x) for x,y in newEdges] #add reverse edges so undirected/bidirectional
+
         if len(newEdges)>0:
             newEdgeIndexes = torch.LongTensor(newEdges).t()
             if oldEdgeFeats is not None:
@@ -1284,14 +1288,23 @@ class FUDGE(BaseModel):
 
 
 
-
-    def createGraph(self,bbs,features,features2,imageHeight,imageWidth,text_emb=None,flip=None,debug_image=None,image=None,merge_only=False):
+    #This creates the graph from the initial BBs.
+    def createGraph(self,
+            bbs,            #the detected or GT BBs
+            features,       #features from detector
+            features2,      #features from detector (other layer)
+            imageHeight,
+            imageWidth,
+            text_emb=None,  #nope
+            flip=None,      #becuse we use the appended masks for the edge features, there is an ordering, this can control it. If None, it's random
+            image=None,     #was used for some features extraction not used now
+            merge_only=False):
         
         if self.relationshipProposal == 'line_of_sight':
             assert(not merge_only)
             candidates = self.selectLineOfSightEdges(bbs,imageHeight,imageWidth)
             rel_prop_scores = None
-        elif self.relationshipProposal == 'feature_nn':
+        elif self.relationshipProposal == 'feature_nn': #FUDGE does this
             candidates, rel_prop_scores = self.selectFeatureNNEdges(bbs,imageHeight,imageWidth,image,features.device,merge_only=merge_only,text_emb=text_emb)
 
         
@@ -1300,45 +1313,39 @@ class FUDGE(BaseModel):
         
             
         if len(candidates)==0:
+            #no edges, no graph
             if merge_only:
                 return None,None,None
             return None, None, None, None, None, None
         if self.training:
+            #This matters if it splits edge featurizing, as it only keeps the gradient for the first batch
             random.shuffle(candidates)
 
         if not merge_only:
             keep_edges=None
 
         if (not merge_only and  self.useShapeFeats!='only') or self.merge_use_mask:
+            #precompute mask of all BBs for whole image
             allMasks=self.makeAllMasks(imageHeight,imageWidth,bbs,merge_only)
         else:
             allMasks=None
         groups=[[i] for i in range(len(bbs))]
-        edge_vis_features = self.computeEdgeVisualFeatures(features,features2,imageHeight,imageWidth,bbs,groups,candidates,allMasks,flip,merge_only,debug_image)
 
-        #if self.useShapeFeats=='sp
-        #print('rel features built')
-        #print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=10))
-        #print('------rel------')
+        edge_vis_features = self.computeEdgeVisualFeatures(features,features2,imageHeight,imageWidth,bbs,groups,candidates,allMasks,flip,merge_only)
+
         if merge_only:
             return edge_vis_features, candidates, rel_prop_scores #we won't build the graph
+
         if self.edge_transition_layers is not None:
             rel_features = self.edge_transition_layers[0](edge_vis_features) #this is an extra linear layer to prep the features for the graph (which expects non-activated values)
         else:
             rel_features = edge_vis_features
     
-        #compute features for the bounding boxes by themselves
-        node_vis_features = self.computeNodeVisualFeatures(features,features2,imageHeight,imageWidth,bbs,groups,text_emb,allMasks,merge_only,debug_image)
+        #compute features for the bounding boxes/nodes by themselves
+        node_vis_features = self.computeNodeVisualFeatures(features,features2,imageHeight,imageWidth,bbs,groups,text_emb,allMasks,merge_only
+
         if self.node_transition_layers is not None:
-            #print('node_vis_features: {}'.format(node_vis_features.size()))
-            if node_vis_features.size(0)==0:
-                print(node_vis_features.size())
-            try:
-                bb_features = self.node_transition_layers[0](node_vis_features) #this is an extra linear layer to prep the features for the graph (which expects non-activated values)
-            except RuntimeError as e:
-                print('text_emb = {}'.format(text_emb))
-                print('node_vis_features: {}, layer: {}'.format(node_vis_features.size(),self.node_transition_layers[0]))
-                raise e
+            bb_features = self.node_transition_layers[0](node_vis_features) #this is an extra linear layer to prep the features for the graph (which expects non-activated values)
         else:
             bb_features = node_vis_features
 
@@ -1350,12 +1357,14 @@ class FUDGE(BaseModel):
         edgeFeatures= rel_features
         edges=candidates
 
-        edges += [(y,x) for x,y in edges] #add backward edges to make graph bidirectional
+        #add backward edges to make graph bidirectional
+        edges += [(y,x) for x,y in edges] 
         edgeIndexes = torch.LongTensor(edges).t().to(rel_features.device)
+
         #now we need to also replicate the edgeFeatures
         edgeFeatures = edgeFeatures.repeat(2,1)
 
-        universalFeatures=None
+        universalFeatures=None #No universal features
 
         
         return (
@@ -1367,6 +1376,7 @@ class FUDGE(BaseModel):
                 keep_edges #not used
                )
 
+    #makes the binary mask marking the location of all BBs
     def makeAllMasks(self,imageHeight,imageWidth,bbs,merge_only=False):
         bbs=bbs[:,1:] #remove conf
         #get corners from bb predictions
@@ -1414,7 +1424,9 @@ class FUDGE(BaseModel):
         else:
             return None
 
-    def computeEdgeVisualFeatures(self,features,features2,imageHeight,imageWidth,bbs,groups,edges,allMasks,flip,merge_only,debug_image):
+    #This ROIAligns the windows for edges and runs them through the CNN. Also computes spatail features and appends
+    def computeEdgeVisualFeatures(self,features,features2,imageHeight,imageWidth,bbs,groups,edges,allMasks,flip,merge_only):
+
         if merge_only:
             pool_h=self.merge_pool_h
             pool_w=self.merge_pool_w
@@ -1426,13 +1438,6 @@ class FUDGE(BaseModel):
             pool2_h=self.pool2_h
             pool2_w=self.pool2_w
         
-        
-        
-        
-        
-        
-
-        #stackedEdgeFeatWindows = torch.FloatTensor((len(edges),features.size(1)+2,self.relWindowSize,self.relWindowSize)).to(features.device())
 
         #get corners from bb predictions
         x = bbs[:,1]
@@ -1461,14 +1466,6 @@ class FUDGE(BaseModel):
         brY = brY.cpu()
 
 
-        if debug_image is not None:
-            debug_images=[]
-            debug_masks=[]
-
-
-
-
-
         groups_index1 = [ [bbs[b] for b in groups[c[0]]] for c in edges ]
         groups_index2 = [ [bbs[b] for b in groups[c[1]]] for c in edges ]
         assert(not self.rotation)
@@ -1481,13 +1478,17 @@ class FUDGE(BaseModel):
             rois = torch.zeros((len(edges),5)).to(features.device) #(batchIndex,x1,y1,x2,y2) as expected by ROI Align
 
             
-
+            #Get the encompassing rectangle for each group
             min_X1,min_Y1,max_X1,max_Y1 = torch.IntTensor([groupRect([[tlX[b],tlY[b],brX[b],brY[b]] for b in group]) for group in groupIs_index1]).permute(1,0)
             min_X2,min_Y2,max_X2,max_Y2 = torch.IntTensor([groupRect([[tlX[b],tlY[b],brX[b],brY[b]] for b in group]) for group in groupIs_index2]).permute(1,0)
+
+            #Get encompassing rectangle for each edge
             min_X = torch.min(min_X1,min_X2).to(features.device)
             min_Y = torch.min(min_Y1,min_Y2).to(features.device)
             max_X = torch.max(max_X1,max_X2).to(features.device)
             max_Y = torch.max(max_Y1,max_Y2).to(features.device)
+
+            #Pad the rectangles
             if merge_only:
                 padX = self.expandedMergeContextX
                 padY = self.expandedMergeContextY
@@ -1510,7 +1511,7 @@ class FUDGE(BaseModel):
             assert((D_xs).all())
             assert((D_ys).all())
 
-            
+            #clip rectangles to image size
             oneT = torch.FloatTensor([1]).to(features.device)
             zeroT = torch.FloatTensor([1]).to(features.device)
             max_X = torch.max(torch.min((max_X+padX).float(),torch.FloatTensor([imageWidth-1]).to(features.device)),oneT)
@@ -1518,49 +1519,14 @@ class FUDGE(BaseModel):
             max_Y = torch.max(torch.min((max_Y+padY).float(),torch.FloatTensor([imageHeight-1]).to(features.device)),oneT)
             min_Y = torch.max(torch.min((min_Y-padY).float(),torch.FloatTensor([imageHeight-2]).to(features.device)),zeroT)
             zeroT=oneT=None
-            #min_X = torch.max(min_X-padX,torch.IntTensor([0]))
-            #max_Y = torch.min(max_Y+padY,torch.IntTensor([imageHeight-1]))
-            #min_Y = torch.max(min_Y-padY,torch.IntTensor([0]))
+
             rois[:,1]=min_X
             rois[:,2]=min_Y
             rois[:,3]=max_X
             rois[:,4]=max_Y
             
-            
-            
 
-
-            ###DEBUG
-            if debug_image is not None:
-                feature_w = rois[:,3]-rois[:,1] +1
-                feature_h = rois[:,4]-rois[:,2] +1
-                w_m = pool2_w/feature_w
-                h_m = pool2_h/feature_h
-                for i in range(4):
-                    index1,index2 = edges[i]
-                    minY = min_Y[i]
-                    minX = min_X[i]
-                    maxY = max_Y[i]
-                    maxX = max_X[i]
-                    #print('crop {}: ({},{}), ({},{})'.format(i,minX.item(),maxX.item(),minY.item(),maxY.item()))
-                    #print(bbs[index1])
-                    #print(bbs[index2])
-                    assert(False)#wrong, not drawing group
-                    crop = debug_image[0,:,int(minY):int(maxY),int(minX):int(maxX)+1].cpu()
-                    crop = (2-crop)/2
-                    if crop.size(0)==1:
-                        crop = crop.expand(3,crop.size(1),crop.size(2))
-                    crop[0,int(tlY[index1].item()-minY):int(brY[index1].item()-minY)+1,int(tlX[index1].item()-minX):int(brX[index1].item()-minX)+1]*=0.5
-                    crop[1,int(tlY[index2].item()-minY):int(brY[index2].item()-minY)+1,int(tlX[index2].item()-minX):int(brX[index2].item()-minX)+1]*=0.5
-                    crop = crop.numpy().transpose([1,2,0])
-                    #img_f.imshow('crop {}'.format(i),crop)
-                    debug_images.append(crop)
-                    #import pdb;pdb.set_trace()
-            ###
-        #if debug_image is not None:
-        #    img_f.waitKey()
-
-        #build all-mask image, may want to move this up and use for relationship proposals
+        #How many masks get appended?
         if (not merge_only and self.useShapeFeats!='only' and self.useShapeFeats != 'only for edge') or (merge_only and self.merge_use_mask):
             if self.expandedRelContext is not None:
                 #We're going to add a third mask for all bbs
@@ -1572,6 +1538,7 @@ class FUDGE(BaseModel):
 
         relFeats=[] #where we'll store the feature of each batch
         
+        #Set up to allow batching out edge feature computation
         if self.useShapeFeats=='only' or self.useShapeFeats=='only for edge':
             batch_size = len(edges)
         elif merge_only:
@@ -1580,15 +1547,18 @@ class FUDGE(BaseModel):
             batch_size = self.roi_batch_size
 
         innerbatches = [(s,min(s+batch_size,len(edges))) for s in range(0,len(edges),batch_size)]
-        #crop from feats, ROI pool
+
         for ib,(b_start,b_end) in enumerate(innerbatches): #we can batch extracting computing the feature vector from rois to save memory
             
             if ib>0 and not self.all_grad:
-                torch.set_grad_enabled(False)
+                torch.set_grad_enabled(False) #After first batch, no gradient to save memeory
+
+            #get the batch
             if (self.useShapeFeats!='only' and self.useShapeFeats != 'only for edge') or merge_only:
-                b_rois = rois[b_start:b_end]
-            b_edges = edges[b_start:b_end]
-            b_groups_index1 = groups_index1[b_start:b_end]
+                b_rois = rois[b_start:b_end] #edge rectangles
+
+            b_edges = edges[b_start:b_end] #node indexes
+            b_groups_index1 = groups_index1[b_start:b_end] #bb indexes
             b_groups_index2 = groups_index2[b_start:b_end]
 
             b_groupIs_index1 = groupIs_index1[b_start:b_end]
@@ -1597,9 +1567,9 @@ class FUDGE(BaseModel):
             if self.useShapeFeats:
                 shapeFeats = torch.FloatTensor(len(b_edges),self.numShapeFeats)
 
+            #perform ROIAlign
             if self.useShapeFeats!='only' and self.useShapeFeats != 'only for edge':
                 if merge_only:
-                    #o#stackedEdgeFeatWindows = self.merge_roi_align(features,b_rois.to(features.device))
                     stackedEdgeFeatWindows = self.merge_roi_align(features,b_rois)
                 else:
                     stackedEdgeFeatWindows = self.roi_align(features,b_rois.to(features.device))
@@ -1612,13 +1582,11 @@ class FUDGE(BaseModel):
                         stackedEdgeFeatWindows = torch.cat( (stackedEdgeFeatWindows,stackedEdgeFeatWindows2), dim=1)
                         stackedEdgeFeatWindows2=None
                 
-                #print('{} roi profile'.format('merge' if merge_only else 'full'))
-                #print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=10))
 
                 #create and add masks
+
                 if not merge_only or self.merge_use_mask:
                     masks = torch.zeros(stackedEdgeFeatWindows.size(0),numMasks,pool2_h,pool2_w)
-
 
                 #make instance specific masks and make shape (spatial) features
                 if self.useShapeFeats!='only'  and self.useShapeFeats != 'only for edge':
@@ -1635,6 +1603,8 @@ class FUDGE(BaseModel):
                     
                     for i,(index1, index2) in enumerate(b_edges):
                         if self.useShapeFeats!='only' and self.useShapeFeats != 'only for edge':
+
+                            #for each bb in node 1
                             for bb_id in groups[index1]:
                                 rr, cc = draw.polygon(
                                             [round((tlY[bb_id].item()-b_rois[i,2].item())*h_m[i].item()),
@@ -1648,6 +1618,7 @@ class FUDGE(BaseModel):
                                             [pool2_h,pool2_w])
                                 masks[i,0,rr,cc]=1
 
+                            #for each bb in node 2
                             for bb_id in groups[index2]:
                                 rr, cc = draw.polygon(
                                             [round((tlY[bb_id].item()-b_rois[i,2].item())*h_m[i].item()),
@@ -1661,26 +1632,27 @@ class FUDGE(BaseModel):
                                             [pool2_h,pool2_w])
                                 masks[i,1,rr,cc]=1
 
+
+                            #add the crop for the allMasks we computed earlier
                             if self.expandedRelContext is not None:
                                 cropArea = allMasks[round(b_rois[i,2].item()):round(b_rois[i,4].item())+1,round(b_rois[i,1].item()):round(b_rois[i,3].item())+1]
                                 if len(cropArea.shape)==0:
                                     raise ValueError("RoI is bad: {}:{},{}:{} for size {}".format(round(b_rois[i,2].item()),round(b_rois[i,4].item())+1,round(b_rois[i,1].item()),round(b_rois[i,3].item())+1,allMasks.shape))
+                                #also need to resize it to match the ROIAlign ouput
                                 masks[i,2] = F.interpolate(cropArea[None,None,...], size=(pool2_h,pool2_w), mode='bilinear',align_corners=False)[0,0]
-                                #masks[i,2] = img_f.resize(cropArea,(stackedEdgeFeatWindows.size(2),stackedEdgeFeatWindows.size(3)))
-                                if debug_image is not None:
-                                    debug_masks.append(cropArea)
                     
                     
                 
         
-
+            #Calculate the spatail features
             if self.useShapeFeats:
                 if type(self.pairer) is BinaryPairReal and type(self.pairer.shape_layers) is not nn.Sequential:
                     #The index specification is to allign with the format feat nets are trained with
                     ixs=[0,1,2,3,3+self.numBBTypes,3+self.numBBTypes,4+self.numBBTypes,5+self.numBBTypes,6+self.numBBTypes,6+2*self.numBBTypes,6+2*self.numBBTypes,7+2*self.numBBTypes]
                 else:
                     ixs=[4,6,2,8,8+self.numBBTypes,5,7,3,8+self.numBBTypes,8+self.numBBTypes+self.numBBTypes,0,1]
-                
+                #allFeats is just the dimensions and stuff
+                #shapeFeats are the features used by the GCN
                 allFeats1 = torch.stack([combineShapeFeatsTensor([bb for bb in group]) for group in b_groups_index1],dim=0)
                 allFeats2 = torch.stack([combineShapeFeatsTensor([bb for bb in group]) for group in b_groups_index2],dim=0)
                 allFeats1 = allFeats1[:,1:] #discard conf
@@ -1688,18 +1660,19 @@ class FUDGE(BaseModel):
 
                 shapeFeats[:,ixs[0]] = 2*allFeats1[:,3]/self.normalizeVert #bb preds half height/width
                 shapeFeats[:,ixs[1]] = 2*allFeats1[:,4]/self.normalizeHorz
-                shapeFeats[:,ixs[2]] = allFeats1[:,2]/math.pi
-                shapeFeats[:,ixs[3]:ixs[4]] = allFeats1[:,-self.numBBTypes:]
+                shapeFeats[:,ixs[2]] = allFeats1[:,2]/math.pi #rotation (not used, always 0)
+                shapeFeats[:,ixs[3]:ixs[4]] = allFeats1[:,-self.numBBTypes:] #classes
 
-                shapeFeats[:,ixs[5]] = 2*allFeats2[:,3]/self.normalizeVert
-                shapeFeats[:,ixs[6]] = 2*allFeats2[:,4]/self.normalizeHorz
-                shapeFeats[:,ixs[7]] = allFeats2[:,2]/math.pi
-                shapeFeats[:,ixs[8]:ixs[9]] = allFeats2[:,-self.numBBTypes:]
+                shapeFeats[:,ixs[5]] = 2*allFeats2[:,3]/self.normalizeVert #height
+                shapeFeats[:,ixs[6]] = 2*allFeats2[:,4]/self.normalizeHorz #width
+                shapeFeats[:,ixs[7]] = allFeats2[:,2]/math.pi   #rotation (not used)
+                shapeFeats[:,ixs[8]:ixs[9]] = allFeats2[:,-self.numBBTypes:] #classes
 
-                shapeFeats[:,ixs[10]] = (allFeats1[:,0]-allFeats2[:,0])/self.normalizeHorz
-                shapeFeats[:,ixs[11]] = (allFeats1[:,1]-allFeats2[:,1])/self.normalizeVert
+                shapeFeats[:,ixs[10]] = (allFeats1[:,0]-allFeats2[:,0])/self.normalizeHorz #difference in x position
+                shapeFeats[:,ixs[11]] = (allFeats1[:,1]-allFeats2[:,1])/self.normalizeVert #difference in y position
                 if self.useShapeFeats!='old':
                     assert(not self.rotation)
+                    #get corners of group of BBs
                     tlX_index1=blX_index1 = torch.stack([min([tlX[b] for b in group]) for group in b_groupIs_index1],dim=0)
                     trX_index1=brX_index1 = torch.stack([max([trX[b] for b in group]) for group in b_groupIs_index1],dim=0)
                     tlY_index1=trY_index1 = torch.stack([min([tlY[b] for b in group]) for group in b_groupIs_index1],dim=0)
@@ -1711,6 +1684,7 @@ class FUDGE(BaseModel):
                     blY_index2=brY_index2 = torch.stack([max([brY[b] for b in group]) for group in b_groupIs_index2],dim=0)
 
                     startCorners = 8+self.numBBTypes+self.numBBTypes
+                    #distance between corners
                     shapeFeats[:,startCorners +0] = torch.sqrt( (tlX_index1-tlX_index2)**2 + (tlY_index1-tlY_index2)**2 )/self.normalizeDist
                     shapeFeats[:,startCorners +1] = torch.sqrt( (trX_index1-trX_index2)**2 + (trY_index1-trY_index2)**2 )/self.normalizeDist
                     shapeFeats[:,startCorners +3] = torch.sqrt( (brX_index1-brX_index2)**2 + (brY_index1-brY_index2)**2 )/self.normalizeDist
@@ -1719,7 +1693,7 @@ class FUDGE(BaseModel):
                 else:
                     startNN = 8+self.numBBTypes+self.numBBTypes
                 startPos=startNN
-                if self.usePositionFeature:
+                if self.usePositionFeature: #not used, for better or worse
                     if self.usePositionFeature=='absolute':
                         shapeFeats[:,startPos +0] = (allFeats1[:,0]-imageWidth/2)/(5*self.normalizeHorz)
                         shapeFeats[:,startPos +1] = (allFeats1[:,1]-imageHeight/2)/(10*self.normalizeVert)
@@ -1732,18 +1706,9 @@ class FUDGE(BaseModel):
                         shapeFeats[:,startPos +3] = (allFeats2[:,1]-imageHeight/2)/(imageHeight/2)
 
             
-            ###DEBUG
-            if debug_image is not None:
-                for i in range(4):
-                    img_f.imshow('b{}-{} crop rel {}'.format(b_start,b_end,i),debug_images[i])
-                    img_f.imshow('b{}-{} masks rel {}'.format(b_start,b_end,i),masks[i].numpy().transpose([1,2,0]))
-                    img_f.imshow('b{}-{} mask all rel {}'.format(b_start,b_end,i),debug_masks[i].numpy())
-                img_f.waitKey()
-                debug_images=[]
-
 
             if self.useShapeFeats!='only' and self.useShapeFeats != 'only for edge':
-                if self.splitFeatures:
+                if self.splitFeatures: #FUDGE doesn't split
                     if not merge_only or self.merge_use_mask:
                         stackedEdgeFeatWindows2 = torch.cat((stackedEdgeFeatWindows2,masks.to(stackedEdgeFeatWindows2.device)),dim=1)
                     if merge_only:
@@ -1752,6 +1717,7 @@ class FUDGE(BaseModel):
                         b_relFeats = self.relFeaturizerConv2(stackedEdgeFeatWindows2)
                     stackedEdgeFeatWindows = torch.cat((stackedEdgeFeatWindows,b_relFeats),dim=1)
                 else:
+                    #FUDGE appends them together
                     if not merge_only or self.merge_use_mask:
                         stackedEdgeFeatWindows = torch.cat((stackedEdgeFeatWindows,masks.to(stackedEdgeFeatWindows.device)),dim=1)
                     #import pdb; pdb.set_trace()
@@ -1759,20 +1725,20 @@ class FUDGE(BaseModel):
                     b_relFeats = self.mergeFeaturizerConv(stackedEdgeFeatWindows) #preparing for graph feature size
                 else:
                     b_relFeats = self.relFeaturizerConv(stackedEdgeFeatWindows) #preparing for graph feature size
-                b_relFeats = b_relFeats.view(b_relFeats.size(0),b_relFeats.size(1))
-                #THESE ARE THE VISUAL FEATURES FOR EDGES, but do we also want to include shape feats?
-            #print('{} append, net profile'.format('merge' if merge_only else 'full'))
-            #print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=10))
-            #print('b_relFeats {}'.format(b_relFeats.size()))
-            #print('shapeFeats {}',format(shapeFeats.size()))
+                b_relFeats = b_relFeats.view(b_relFeats.size(0),b_relFeats.size(1)) #flatten
+                #these are the visual features
+
             if self.useShapeFeats:
                 if self.useShapeFeats=='only' or self.useShapeFeats=='only for edge':
                     b_relFeats = shapeFeats.to(features.device)
                 else:
+                    #Append the spatial features
                     b_relFeats = torch.cat((b_relFeats,shapeFeats.to(features.device)),dim=1)
+
             assert(not torch.isnan(b_relFeats).any())
-            relFeats.append(b_relFeats)
-            
+            relFeats.append(b_relFeats) #append
+
+        #end batching loop
             
         if self.training:
             torch.set_grad_enabled(True)
@@ -1781,12 +1747,22 @@ class FUDGE(BaseModel):
         stackedEdgeFeatWindows2=None
         b_relFeats=None
 
-        if self.relFeaturizerFC is not None:
+        if self.relFeaturizerFC is not None: #not used by FUDGE
             relFeats = self.relFeaturizerFC(relFeats)
         return relFeats
 
+    #computes the features to go on the graph's nodes
+    def computeNodeVisualFeatures(self,
+            features,       #features from detector network
+            features2,      #other layer
+            imageHeight,
+            imageWidth,
+            bbs,            #BBs
+            groups,         #these define the nodes, bb indexes
+            text_emb,       #nope
+            allMasks,       #precomputed mask for each bb
+            merge_only):
 
-    def computeNodeVisualFeatures(self,features,features2,imageHeight,imageWidth,bbs,groups,text_emb,allMasks,merge_only,debug_image):
         if self.useBBVisualFeats and not merge_only:
             assert(features.size(0)==1)
             if self.useShapeFeats:
@@ -1795,6 +1771,7 @@ class FUDGE(BaseModel):
                 masks = torch.zeros(len(groups),2,self.poolBB2_h,self.poolBB2_w)
 
             if self.useShapeFeats != "only":
+                #Get the ROI rectangles surrounding each group/node
                 rois = torch.zeros((len(groups),5))
                 assert(not self.rotation)
                 x = bbs[:,1]
@@ -1815,14 +1792,11 @@ class FUDGE(BaseModel):
                         for group in groups]).permute(1,0)
 
                 if self.expandedBBContext is not None:
-                    #max_X = torch.min(max_X+self.expandedBBContext,torch.IntTensor([imageWidth-1]))
-                    #min_X = torch.max(min_X-self.expandedBBContext,torch.IntTensor([0]))
-                    #max_Y = torch.min(max_Y+self.expandedBBContext,torch.IntTensor([imageHeight-1]))
-                    #min_Y = torch.max(min_Y-self.expandedBBContext,torch.IntTensor([0]))
                     if type(self.expandedBBContext) is list:
                         padY,padX=self.expandedBBContext
                     else:
                         padY=padX=self.expandedBBContext
+                    #pad and clip to images size
                     max_X = torch.max(torch.min(max_X+padX,torch.IntTensor([imageWidth-1])),torch.IntTensor([1]))
                     min_X = torch.max(torch.min(min_X-padX,torch.IntTensor([imageWidth-2])),torch.IntTensor([0]))
                     max_Y = torch.max(torch.min(max_Y+padY,torch.IntTensor([imageHeight-1])),torch.IntTensor([1]))
@@ -1833,13 +1807,14 @@ class FUDGE(BaseModel):
                 rois[:,4]=max_Y
 
             if self.useShapeFeats:
+                #the spatial features for the GCN
                 allFeats = torch.stack([combineShapeFeatsTensor([bbs[bb_id] for bb_id in group]) for group in groups],dim=0)
                 allFeats=allFeats[:,1:]
-                node_shapeFeats[:,0]= (allFeats[:,2]+math.pi)/(2*math.pi)
-                node_shapeFeats[:,1]=allFeats[:,3]/self.normalizeVert
-                node_shapeFeats[:,2]=allFeats[:,4]/self.normalizeHorz
-                node_shapeFeats[:,3:self.numBBTypes+3]=torch.sigmoid(allFeats[:,-self.numBBTypes:])
-                if self.usePositionFeature:
+                node_shapeFeats[:,0]= (allFeats[:,2]+math.pi)/(2*math.pi) #rotation (always 0 for FUDGE)
+                node_shapeFeats[:,1]=allFeats[:,3]/self.normalizeVert #height
+                node_shapeFeats[:,2]=allFeats[:,4]/self.normalizeHorz #width
+                node_shapeFeats[:,3:self.numBBTypes+3]=torch.sigmoid(allFeats[:,-self.numBBTypes:]) #classes
+                if self.usePositionFeature: #not used in FUDGE
                     if self.usePositionFeature=='absolute':
                         node_shapeFeats[:,self.numBBTypes+3] = (allFeats[:,0]-imageWidth/2)/(5*self.normalizeHorz)
                         node_shapeFeats[:,self.numBBTypes+4] = (allFeats[:,1]-imageHeight/2)/(10*self.normalizeVert)
@@ -1847,7 +1822,6 @@ class FUDGE(BaseModel):
                         node_shapeFeats[:,self.numBBTypes+3] = (allFeats[:,0]-imageWidth/2)/(imageWidth/2)
                         node_shapeFeats[:,self.numBBTypes+4] = (allFeats[:,1]-imageHeight/2)/(imageHeight/2)
             if self.useShapeFeats != "only" and self.expandedBBContext:
-                #Add detected BB masks
                 #warp to roi space
                 feature_w = rois[:,3]-rois[:,1] +1
                 feature_h = rois[:,4]-rois[:,2] +1
@@ -1855,6 +1829,7 @@ class FUDGE(BaseModel):
                 h_m = self.poolBB2_h/feature_h
 
 
+                #Add mask for BBs in group
                 for i in range(len(groups)):
                     for bb_id in groups[i]:
                         rr, cc = draw.polygon(
@@ -1869,106 +1844,97 @@ class FUDGE(BaseModel):
                                     [self.poolBB2_h,self.poolBB2_w])
                     masks[i,0,rr,cc]=1
                     if self.expandedBBContext is not None:
+                        #crop and resize all-bbs mask
                         cropArea = allMasks[round(rois[i,2].item()):round(rois[i,4].item())+1,round(rois[i,1].item()):round(rois[i,3].item())+1]
                         masks[i,1] = F.interpolate(cropArea[None,None,...], size=(self.poolBB2_h,self.poolBB2_w), mode='bilinear',align_corners=False)[0,0]
             
-                    ###DEBUG
-                    if debug_image is not None and i<5:
-                        assert(self.rotation==False)
-                        crop = debug_image[0,:,int(minY):int(maxY),int(minX):int(maxX)+1].cpu()
-                        crop = (2-crop)/2
-                        if crop.size(0)==1:
-                            crop = crop.expand(3,crop.size(1),crop.size(2))
-                        crop[0,int(tlY[i].item()-minY):int(brY[i].item()-minY)+1,int(tlX[i].item()-minX):int(brX[i].item()-minX)+1]*=0.5
-                        crop = crop.numpy().transpose([1,2,0])
-                        img_f.imshow('crop bb {}'.format(i),crop)
-                        img_f.imshow('masks bb {}'.format(i),torch.cat((masks[i],torch.zeros(1,self.poolBB2_h,self.poolBB2_w)),dim=0).numpy().transpose([1,2,0]))
-                        #debug_images.append(crop)
-
-            if debug_image is not None:
-                img_f.waitKey()
             if self.useShapeFeats != "only":
-                #node_features[i]= F.avg_pool2d(features[0,:,minY:maxY+1,minX:maxX+1], (1+maxY-minY,1+maxX-minX)).view(-1)
+                #Do ROIAlign (we don't need to batch nodes like edges becuase there's far fewer and they're smaller)
                 node_features = self.roi_alignBB(features,rois.to(features.device))
+
                 assert(not torch.isnan(node_features).any())
                 if features2 is not None:
                     node_features2 = self.roi_alignBB2(features2,rois.to(features.device))
                     if not self.splitFeatures:
+                        #FUDGE cats them
                         node_features = torch.cat( (node_features,node_features2), dim=1)
+
                 if self.expandedBBContext:
-                    if self.splitFeatures:
+                    if self.splitFeatures: #FUDGE doesn't split
                         node_features2 = torch.cat( (node_features2,masks.to(node_features2.device)) ,dim=1)
                         node_features2 = self.bbFeaturizerConv2(node_features2)
                         node_features = torch.cat( (node_features,node_features2), dim=1)
                     else:
+                        #Append the masks
                         node_features = torch.cat( (node_features,masks.to(node_features.device)) ,dim=1)
-                node_features = self.bbFeaturizerConv(node_features)
-                node_features = node_features.view(node_features.size(0),node_features.size(1))
-                #THESE ARE THE VISUAL FEATURES FOR NODES
+
+                node_features = self.bbFeaturizerConv(node_features) #run CNN!
+                node_features = node_features.view(node_features.size(0),node_features.size(1)) #flatten
+                #visual features for nodes
                 
                 if self.useShapeFeats:
+                    #append the spatial features
                     node_features = torch.cat( (node_features,node_shapeFeats.to(node_features.device)), dim=1 )
+                    #These are the final node features for the GCN (before transition layer)
             else:
                 assert(self.useShapeFeats)
                 node_features = node_shapeFeats.to(features.device)
 
-            if text_emb is not None: #I'll assume the text_emb is just left off if not wanted
+            if text_emb is not None: #nope
                 node_features = torch.cat( (node_features,text_emb), dim=1 )
 
-            assert(not torch.isnan(node_features).any())
-            if self.bbFeaturizerFC is not None:
+            if self.bbFeaturizerFC is not None: #not used by FUDGE
                 node_features = self.bbFeaturizerFC(node_features) #if uncommented, change rot on node_shapeFeats, maybe not
             assert(not torch.isnan(node_features).any())
         elif text_emb is not None:
             node_features = text_emb
         else:
             node_features = None
+
         return node_features
 
 
 
-
+    #This is the proposal step
     def selectFeatureNNEdges(self,bbs,imageHeight,imageWidth,image,device,merge_only=False,text_emb=False):
-        if len(bbs)<2:
+        if len(bbs)<2: #if we have only one BB, we don't have any edges
             return [], None
         
-        
-        #features: tlXDiff,trXDiff,brXDiff,blXDiff,tlYDiff,trYDiff,brYDiff,blYDiff, centerXDiff, centerYDiff, absX, absY, h1, w1, h2, w2, classpred1, classpred2, line of sight (binary)
+        #we build the features as the every bb to every bb matrix and flatten       
 
-        #0: tlXDiff
-        #1: trXDiff
-        #2: brXDiff
-        #3: blXDiff
-        #4: centerXDiff
-        #5: w1
-        #6: w2
-        #7: tlYDiff
-        #8: trYDiff
-        #9: brYDiff
-        #10: blYDiff
-        #11: centerYDiff
-        #12: h1
-        #13: h2
-        #14: tlDist
-        #15: trDist
-        #16: brDist
-        #17: blDist
-        #18: centDist
-        #19: rel pos X1
-        #20: rel pos Y1
-        #21: rel pos X2
-        #22: rel pos Y2
+        #These are the features used:
+        #0: top-left x diff
+        #1: top-right x diff
+        #2: bot-right x diff
+        #3: bot-left x diff
+        #4: center x Diff
+        #5: width bb1
+        #6: width bb2
+        #7: top-left Y Diff
+        #8: top-right Y Diff
+        #9: bot-right Y Diff
+        #10: bot-left Y Diff
+        #11: center Y Diff
+        #12: height bb1
+        #13: height bb2
+        #14: top-left to top-left Dist
+        #15: top-right to top-right Dist
+        #16: bot-right to bot-right Dist
+        #17: bot-left to bot-left Dist
+        #18: center to center Dist
+        #19: abs pos X1
+        #20: abs pos Y1
+        #21: abs pos X2
+        #22: abs pos Y2
         #23: line of sight
         #24: conf1
         #25: conf2
-        #26: sin r 1
-        #27: sin r 2
-        #28: cos r 1
-        #29: cos r 2
-        #30-n: classpred1
-        #n-m: classpred2
-        #if curvedBB:
-        #m:m+8: left and right sin/cos
+        #26: sin rot bb 1 #the rotation is always 0 (since we don't use it)
+        #27: sin rot bb 2
+        #28: cos rot bb 1
+        #29: cos rot bb 2
+        #30-n: classpred bb1
+        #n-m: classpred bb2
 
         conf = bbs[:,0]
         x = bbs[:,1]
@@ -1980,6 +1946,7 @@ class FUDGE(BaseModel):
         numClassFeat = classFeat.size(1)
         cos_r = torch.cos(r)
         sin_r = torch.sin(r)
+        #get corners
         tlX = -w*cos_r + -h*sin_r +x
         tlY =  w*sin_r + -h*cos_r +y
         trX =  w*cos_r + -h*sin_r +x
@@ -1989,7 +1956,7 @@ class FUDGE(BaseModel):
         blX = -w*cos_r + h*sin_r +x
         blY =  w*sin_r + h*cos_r +y
 
-        
+        #all line-of-sights
         line_of_sight = self.selectLineOfSightEdges(bbs,imageHeight,imageWidth,return_all=True)
         
         
@@ -2033,6 +2000,8 @@ class FUDGE(BaseModel):
         
         if self.prop_with_text_emb:
             num_feats += 2*self.numTextFeats
+
+        #put the features all in
         features = torch.FloatTensor(len(bbs),len(bbs), num_feats)
         features[:,:,0] = tlX1-tlX2
         features[:,:,1] = trX1-trX2
@@ -2077,8 +2046,8 @@ class FUDGE(BaseModel):
         features[:,:,7:14]/=self.normalizeVert
         features[:,:,14:19]/=(self.normalizeVert+self.normalizeHorz)/2
 
-        if self.prop_with_text_emb:
-            reduced_emb = text_emb#self.reduce_text_emb_for_prop(text_emb)
+        if self.prop_with_text_emb: #nope
+            reduced_emb = text_emb
 
             features[:,:,-2*reduced_emb.size(1):-reduced_emb.size(1)] = reduced_emb[None,:,:]
             features[:,:,-reduced_emb.size(1):] = reduced_emb[:,None,:]
@@ -2089,27 +2058,14 @@ class FUDGE(BaseModel):
         
         
         
-        ##self.opt_cand.append(time)
         
         
         
         
         if merge_only:
             rel_pred = self.merge_prop_nn(features.to(device))
-            #features=features.to(device)
-            #rel_pred = self.merge_prop_nn(features)
-            ##HARD CODED RULES FOR EARLY TRAINING
-            #avg_h = features[:,12:14].mean()
-            #avg_w = features[:,5:6].mean()
-            ##could_merge = ((y1-y2).abs()<4*avg_h).logical_and((x1-x2).abs()<10*avg_w)
-            ##could_merge = could_merge.view(-1)[:,None]
-            #could_merge = (features[:,11].abs()<4*avg_h).logical_and((features[:,4]).abs()<10*avg_w)[:,None]
-            #features=features.cpu()
-            #full_rel_pred = rel_pred
-            #minV=rel_pred.min()
-            #rel_pred=torch.where(could_merge,rel_pred,minV)
-            #could_merge=could_merge.cpu()
         else:
+            #run through MLP
             rel_pred = self.rel_prop_nn(features.to(device))
 
         if self.rel_hard_thresh is not None:
@@ -2117,22 +2073,15 @@ class FUDGE(BaseModel):
 
 
         rel_pred2d = rel_pred.view(len(bbs),len(bbs)) #unflatten
-        rel_pred2d_comb = (torch.triu(rel_pred2d,diagonal=1)+torch.tril(rel_pred2d,diagonal=-1).permute(1,0))/2
+        rel_pred2d_comb = (torch.triu(rel_pred2d,diagonal=1)+torch.tril(rel_pred2d,diagonal=-1).permute(1,0))/2 #average the two permutations (x,y)+(y,x)
+
+        #get the coordinates
         rel_coords=torch.triu_indices(len(bbs),len(bbs),offset=1)
         rel_pred = rel_pred2d_comb[rel_coords.tolist()]
         #I need to convert to tuples so that later "(x,y) in rels" works
-        rel_coords = [(i,j) for i,j in rel_coords.permute(1,0).tolist()]#rel_coords.permute(1,0).tolist()
-        #rel_coords = [(i.item(),j.item()) for i,j in rel_coords.permute(1,0)]
+        rel_coords = [(i,j) for i,j in rel_coords.permute(1,0).tolist()]
         rels_ordered = list(zip(rel_pred.cpu().tolist(),rel_coords))
 
-        #DDDD
-        #actual_rels = [(i,j) for i in range(len(bbs)) for j in range(i+1,len(bbs))]
-        #rels_ordered_D = [ ((rel_pred2d[rel[0],rel[1]].item()+rel_pred2d[rel[1],rel[0]].item())/2,rel) for rel in actual_rels ]
-        #for (score,rel),(scoreD,relD) in zip(rels_ordered,rels_ordered_D):
-        #    assert(abs(score-scoreD)<0.00001 and rel==relD)
-        #DDDD
-
-        
 
         if merge_only:
             rel_hard_thresh = self.rel_merge_hard_thresh
@@ -2141,6 +2090,7 @@ class FUDGE(BaseModel):
 
 
         if rel_hard_thresh is not None:
+            #we don't do this
             if self.training:
                 rels_ordered.sort(key=lambda x: x[0], reverse=True)
             keep_rels = [r[1] for r in rels_ordered if r[0]>rel_hard_thresh]
@@ -2153,22 +2103,25 @@ class FUDGE(BaseModel):
             keep_rels = keep_rels[:max_rel_to_keep]
             implicit_threshold = rel_hard_thresh
         else:
+            #Sort by predicted score
             rels_ordered.sort(key=lambda x: x[0], reverse=True)
-            
-            
 
+            #get the best x%
             keep = math.ceil(self.percent_rel_to_keep*len(rels_ordered))
+
             if merge_only:
                 max_rel_to_keep = self.max_merge_rel_to_keep
             else:
                 max_rel_to_keep = self.max_rel_to_keep
+
             if not self.training:
                 max_rel_to_keep *= 3
             keep = min(keep,max_rel_to_keep)
-            #print('keeping {} of {}'.format(keep,len(rels_ordered)))
+
+            #trim to max limit
             keep_rels = [r[1] for r in rels_ordered[:keep]]
-            #if merge_only:
-                #print('total rels:{}, keeping:{}, max:{}'.format(len(rels_ordered),keep,max_rel_to_keep))
+
+            #just for record keeping
             if keep<len(rels_ordered):
                 implicit_threshold = rels_ordered[keep][0]
             else:
@@ -2179,54 +2132,22 @@ class FUDGE(BaseModel):
         return keep_rels, (rel_pred,rel_coords, implicit_threshold)
 
 
-    def betweenPixels(self,bbs,image):
-        #instead just read in mask image?
-        TIME_getCenter=[]
-        TIME_draw_line=[]
-        TIME_sum_pixels=[]
-        image=image.cpu() #This will run faster in CPU
-        values = torch.FloatTensor(len(bbs),len(bbs)).zero_()
-        for i,bb1 in enumerate(bbs[:-1]):
-            for j,bb2 in zip(range(i+1,len(bbs)),bbs[i+1:]):
-                
-                x1,y1 = bb1.getCenterPoint()
-                x2,y2 = bb2.getCenterPoint()
-
-                x1 = min(image.size(3)-1,max(0,x1))
-                x2 = min(image.size(3)-1,max(0,x2))
-                y1 = min(image.size(2)-1,max(0,y1))
-                y2 = min(image.size(2)-1,max(0,y2))
-                
-                
-                rr,cc = draw.line(int(round(y1)),int(round(x1)),int(round(y2)),int(round(x2)))
-                
-                
-                v = image[0,:,rr,cc].mean()#.cpu()
-                
-                values[i,j] = v
-                values[j,i] = v
-        
-        return values
-
-
-    def selectLineOfSightEdges(self,bbs,imageHeight,imageWidth, return_all=False):
+    
+    #This function takes the bbs and returns a list of bb id pairs that have line-of-sight
+    def selectLineOfSightEdges(self,bbs,
+            imageHeight,
+            imageWidth, 
+            return_all=False #when using this as the proposal, we shorten the max distance to trim the nuber of edges down to a maximum amount. FUDGE just gets all since they're a feature
+            ):
         if bbs.size(0)<2:
             return []
-        #return list of index pairs
 
-        bbs = bbs[:,1:] #remove conf as won't use it
+        bbs = bbs[:,1:] #remove conf as we won't use it
 
 
+        #set up getting corners, etc
         sin_r = torch.sin(bbs[:,2])
         cos_r = torch.cos(bbs[:,2])
-        #lx = bbs[:,0] - cos_r*bbs[:,4] 
-        #ly = bbs[:,1] + sin_r*bbs[:,3]
-        #rx = bbs[:,0] + cos_r*bbs[:,4] 
-        #ry = bbs[:,1] - sin_r*bbs[:,3]
-        #tx = bbs[:,0] - cos_r*bbs[:,4] 
-        #ty = bbs[:,1] - sin_r*bbs[:,3]
-        #bx = bbs[:,0] + cos_r*bbs[:,4] 
-        #by = bbs[:,1] + sin_r*bbs[:,3]
         brX = bbs[:,4]*cos_r-bbs[:,3]*sin_r + bbs[:,0] 
         brY = bbs[:,4]*sin_r+bbs[:,3]*cos_r + bbs[:,1] 
         blX = -bbs[:,4]*cos_r-bbs[:,3]*sin_r + bbs[:,0]
@@ -2240,8 +2161,6 @@ class FUDGE(BaseModel):
         minY = min( torch.min(trY), torch.min(tlY), torch.min(blY), torch.min(brY) )
         maxX = max( torch.max(trX), torch.max(tlX), torch.max(blX), torch.max(brX) )
         maxY = max( torch.max(trY), torch.max(tlY), torch.max(blY), torch.max(brY) )
-        #if (math.isinf(minX) or math.isinf(minY) or math.isinf(maxX) or math.isinf(maxY) ):
-        #    import pdb;pdb.set_trace()
 
         minX = min(max(minX.item(),0),imageWidth)
         minY = min(max(minY.item(),0),imageHeight)
@@ -2250,14 +2169,6 @@ class FUDGE(BaseModel):
         if minX>=maxX or minY>=maxY:
             return []
 
-        #lx-=minX 
-        #ly-=minY 
-        #rx-=minX 
-        #ry-=minY 
-        #tx-=minX 
-        #ty-=minY 
-        #bx-=minX 
-        #by-=minY 
         zeros = torch.zeros_like(trX)
         tImageWidth = torch.ones_like(trX)*imageWidth
         tImageHeight = torch.ones_like(trX)*imageHeight
@@ -2280,20 +2191,12 @@ class FUDGE(BaseModel):
 
 
 
-
+        #we'll be plotting pixels, so scale everything down
         scaleCand = 0.5
         minX*=scaleCand
         minY*=scaleCand
         maxX*=scaleCand
         maxY*=scaleCand
-        #lx  *=scaleCand
-        #ly  *=scaleCand
-        #rx  *=scaleCand
-        #ry  *=scaleCand
-        #tx  *=scaleCand
-        #ty  *=scaleCand
-        #bx  *=scaleCand
-        #by  *=scaleCand
         trX *=scaleCand
         trY *=scaleCand
         tlX *=scaleCand
@@ -2306,20 +2209,16 @@ class FUDGE(BaseModel):
         w = bbs[:,4]*scaleCand
         r = bbs[:,2]
 
-        distMul=1.0
-        while distMul>0.03:
+        distMul=1.0 #this multiplier is how the max distance is shortened
+        while distMul>0.03: #we'll repeatedly shorten until we have few enough
 
-            boxesDrawn = np.zeros( (math.ceil(maxY-minY),math.ceil(maxX-minX)) ,dtype=int)#torch.IntTensor( (maxY-minY,maxX-minX) ).zero_()
+            boxesDrawn = np.zeros( (math.ceil(maxY-minY),math.ceil(maxX-minX)) ,dtype=int)
             if boxesDrawn.shape[0]==0 or boxesDrawn.shape[1]==0:
                 return []
-            #import pdb;pdb.set_trace()
+
             numBoxes = bbs.size(0)
             for i in range(numBoxes):
                 
-                #img_f.line( boxesDrawn, (int(tlX[i]),int(tlY[i])),(int(trX[i]),int(trY[i])),i,1)
-                #img_f.line( boxesDrawn, (int(trX[i]),int(trY[i])),(int(brX[i]),int(brY[i])),i,1)
-                #img_f.line( boxesDrawn, (int(blX[i]),int(blY[i])),(int(brX[i]),int(brY[i])),i,1)
-                #img_f.line( boxesDrawn, (int(blX[i]),int(blY[i])),(int(tlX[i]),int(tlY[i])),i,1)
 
                 #These are to catch the wierd case of a (clipped) bb having 0 height or width
                 #we just add a bit, this shouldn't greatly effect the heuristic pairing
@@ -2340,9 +2239,8 @@ class FUDGE(BaseModel):
 
 
                 rr,cc = draw.polygon_perimeter([int(tlY[i]),int(trY[i]),int(brY[i]),int(blY[i])],[int(tlX[i]),int(trX[i]),int(brX[i]),int(blX[i])],boxesDrawn.shape,True)
-                boxesDrawn[rr,cc]=i+1
+                boxesDrawn[rr,cc]=i+1 #we put each bbs outline as an ID in the image
 
-            #how to walk?
             #walk until number found.
             # if in list, end
             # else add to list, continue
@@ -2353,6 +2251,7 @@ class FUDGE(BaseModel):
             minHeight=20
             numFan=5
             
+            #This defines how a ray travels
             def pathWalk(myId,startX,startY,angle,distStart=0,splitDist=100):
                 hit=set()
                 lineId = myId+numBoxes
@@ -2384,27 +2283,20 @@ class FUDGE(BaseModel):
                     if x<0 or y<0 or x>=boxesDrawn.shape[1] or y>=boxesDrawn.shape[0]:
                         break
                     here = boxesDrawn[y,x]
-                    #print('{} {} {} : {}'.format(x,y,here,len(hit)))
                     if here>0 and here<=numBoxes and here!=myId:
                         if here in hit and prev!=here:
                             break
                         else:
                             hit.add(here)
-                            #print('hit {} at {}, {}  ({})'.format(here,x,y,len(hit)))
-                            #elif here == lineId or here == myId:
-                            #break
                     else:
                         boxesDrawn[y,x]=lineId
                     prev=here
                     distSoFar= distStart+math.sqrt((x-startX)**2 + (y-startY)**2)
 
-                    #if hitting and maxDist-distSoFar>splitMin and (distSoFar-distStart)>splitDist and len(toSplit)==0:
-                    #    #split
-                    #    toSplit.append((myId,x,y,angle+45,distSoFar,hit.copy(),splitDist*1.5))
-                    #    toSplit.append((myId,x,y,angle-45,distSoFar,hit.copy(),splitDist*1.5))
 
                 return hit
 
+            #send rays out
             def fan(boxId,x,y,angle,num,hit):
                 deg = 90/(num+1)
                 curDeg = angle-45+deg
@@ -2412,40 +2304,7 @@ class FUDGE(BaseModel):
                     hit.update( pathWalk(boxId,x,y,curDeg) )
                     curDeg+=deg
 
-            def drawIt():
-                x = bbs[:,0]*scaleCand - minX
-                y = bbs[:,1]*scaleCand - minY
-                drawn = np.zeros( (math.ceil(maxY-minY),math.ceil(maxX-minX),3))#torch.IntTensor( (maxY-minY,maxX-minX) ).zero_()
-                numBoxes = bbs.size(0)
-                for a,b in candidates:
-                    img_f.line( drawn, (int(x[a]),int(y[a])),(int(x[b]),int(y[b])),(random.random()*0.5,random.random()*0.5,random.random()*0.5),1)
-                for i in range(numBoxes):
-                    
-                    #img_f.line( boxesDrawn, (int(tlX[i]),int(tlY[i])),(int(trX[i]),int(trY[i])),i,1)
-                    #img_f.line( boxesDrawn, (int(trX[i]),int(trY[i])),(int(brX[i]),int(brY[i])),i,1)
-                    #img_f.line( boxesDrawn, (int(blX[i]),int(blY[i])),(int(brX[i]),int(brY[i])),i,1)
-                    #img_f.line( boxesDrawn, (int(blX[i]),int(blY[i])),(int(tlX[i]),int(tlY[i])),i,1)
-
-                    rr,cc = draw.polygon_perimeter([int(tlY[i]),int(trY[i]),int(brY[i]),int(blY[i])],[int(tlX[i]),int(trX[i]),int(brX[i]),int(blX[i])])
-                    drawn[rr,cc]=(random.random()*0.8+.2,random.random()*0.8+.2,random.random()*0.8+.2)
-                img_f.imshow('res',drawn)
-                #img_f.waitKey()
-
-                rows,cols=boxesDrawn.shape
-                colorMap = [(0,0,0)]
-                for i in range(numBoxes):
-                    colorMap.append((random.random()*0.8+.2,random.random()*0.8+.2,random.random()*0.8+.2))
-                for i in range(numBoxes):
-                    colorMap.append( (colorMap[i+1][0]/3,colorMap[i+1][1]/3,colorMap[i+1][2]/3) )
-                draw2 = np.zeros((rows,cols,3))
-                for r in range(rows):
-                    for c in range(cols):
-                        draw2[r,c] = colorMap[int(round(boxesDrawn[r,c]))]
-                        #draw[r,c] = (255,255,255) if boxesDrawn[r,c]>0 else (0,0,0)
-
-                img_f.imshow('d',draw2)
-                img_f.waitKey()
-
+            #and go!
 
             candidates=set()
             for i in range(numBoxes):
@@ -2456,6 +2315,7 @@ class FUDGE(BaseModel):
                 horzDiv = 1+math.ceil(w[i]/minWidth)
                 vertDiv = 1+math.ceil(h[i]/minHeight)
 
+                #went send rays out from each edge
                 if horzDiv==1:
                     leftW=0.5
                     rightW=0.5
@@ -2479,6 +2339,7 @@ class FUDGE(BaseModel):
                         botW = j/(vertDiv-1)
                         hit.update( pathWalk(boxId, tlX[i].item()*topW+blX[i].item()*botW, tlY[i].item()*topW+blY[i].item()*botW,r[i].item()+180) )
                         hit.update( pathWalk(boxId, trX[i].item()*topW+brX[i].item()*botW, trY[i].item()*topW+brY[i].item()*botW,r[i].item()) )
+                #we fan rays out from each corner
                 fan(boxId,tlX[i].item(),tlY[i].item(),r[i].item()+135,numFan,hit)
                 fan(boxId,trX[i].item(),trY[i].item(),r[i].item()+45,numFan,hit)
                 fan(boxId,blX[i].item(),blY[i].item(),r[i].item()+225,numFan,hit)
@@ -2487,11 +2348,8 @@ class FUDGE(BaseModel):
                 for jId in hit:
                     candidates.add( (min(i,jId-1),max(i,jId-1)) )
             
-            #print('candidates:{} ({})'.format(len(candidates),distMul))
-            #if len(candidates)>1:
-            #    drawIt()
             if (len(candidates)+numBoxes<MAX_GRAPH_SIZE and len(candidates)<MAX_CANDIDATES) or return_all:
-                return list(candidates)
+                return list(candidates) #FUDGE just gets them all
             else:
                 if self.useOldDecay:
                     distMul*=0.75
@@ -2504,21 +2362,28 @@ class FUDGE(BaseModel):
 
 
 
+    #This creates the graph and runs the GCN
+    def runGraph(self,
+            gtGroups,       #only used for DocStruct eval
+            gtTrans,        #nope
+            image,
+            useBBs,         #the detected or GT BBs
+            saved_features, #The detector features
+            saved_features2,#other feature layers
+            bbTrans,embeddings,#nope
+            merge_first_only=False):
 
-    def runGraph(self,gtGroups,gtTrans,image,useBBs,saved_features,saved_features2,bbTrans,embeddings,merge_first_only=False):
-
-        
+        #create initial groups (single BB in each group)
         groups=[[i] for i in range(len(useBBs))]
-        if self.merge_first:
+
+        if self.merge_first: #FUDGE doesn't do merge-first
             assert gtGroups is None
             
             #We don't build a full graph, just propose edges and extract the edge features
             edgeOuts,edgeIndexes,merge_prop_scores = self.createGraph(useBBs,saved_features,saved_features2,image.size(-2),image.size(-1),text_emb=embeddings,image=image,merge_only=True)
-            #_,edgeIndexes, edgeFeatures,_ = graph
             
             
             if edgeOuts is not None:
-                #print(edgeOuts.size())
                 edgeOuts = self.mergepred(edgeOuts)
                 edgeOuts = edgeOuts[:,None,:] #introduce repition dim (to match graph network)
 
@@ -2528,8 +2393,6 @@ class FUDGE(BaseModel):
             allGroups=[groups]
             allEdgeIndexes=[edgeIndexes]
 
-            #print('merge first.   num bbs:{}, num edges: {}'.format(len(useBBs),len(edgeIndexes)))
-            #print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=10))
             
             if edgeIndexes is not None:
                 startBBs = len(useBBs)
@@ -2553,16 +2416,9 @@ class FUDGE(BaseModel):
                 
                 
                 groups=[[i] for i in range(len(useBBs))]
-                #print('merge first reduced graph by {} nodes ({}->{}). max edge pred:{}, mean:{}'.format(startBBs-len(useBBs),startBBs,len(useBBs),torch.sigmoid(edgeOuts.max()),torch.sigmoid(edgeOuts.mean())))
             
             
             if merge_first_only:
-                
-                    
-                    
-                        
-                        
-                            
                 return allOutputBoxes, allEdgeOuts, allEdgeIndexes, allNodeOuts, allGroups, None, merge_prop_scores, None
 
             if bbTrans is not None:
@@ -2572,7 +2428,9 @@ class FUDGE(BaseModel):
                 embeddings = self.embedding_model(bbTrans,saved_features.device)
             else:
                 embeddings=None
+
         else:
+            #FUDGE, init containers for each GCN iteration
             merge_prop_scores=None
             allOutputBoxes=[]
             allNodeOuts=[]
@@ -2582,45 +2440,41 @@ class FUDGE(BaseModel):
 
 
 
-        
+        #create the graph
         graph,edgeIndexes,rel_prop_scores,last_node_visual_feats,last_edge_visual_feats,keep_edges = self.createGraph(useBBs,saved_features,saved_features2,image.size(-2),image.size(-1),text_emb=embeddings,image=image)
         
         
-
+        #no edges, no need for GCN
         if graph is None:
             return [useBBs], None, None, None, None, rel_prop_scores, merge_prop_scores, (useBBs.cpu().detach(),None,None,bbTrans)
 
         if self.reintroduce_features=='map':
+            #save the initial features to reintroduce
             last_node_visual_feats = graph[0]
             last_edge_visual_feats = graph[2]
 
-        
-
-        #print('{} node feats mean:{:.3}, std:{:.3}, min:{:.2}, max:{:.2}'.format(0,graph[0].mean(),graph[0].std(),   graph[0].min(), graph[0].max()))
-        #print('  edge feats mean:{:.3}, std:{:.3}, min:{:.2}, max:{:.2}'.format(graph[2].mean(), graph[2].std(),  graph[2].min(), graph[2].max()))
+        #Run first GCN
         nodeOuts, edgeOuts, nodeFeats, edgeFeats, uniFeats = self.graphnets[0](graph)
-        assert(edgeOuts is None or not torch.isnan(edgeOuts).any())
-        edgeIndexes = edgeIndexes[:len(edgeIndexes)//2]
-        #edgeOuts = (edgeOuts[:edgeOuts.size(0)//2] + edgeOuts[edgeOuts.size(0)//2:])/2 #average two directions of edge
-        #edgeFeats = (edgeFeats[:edgeFeats.size(0)//2] + edgeFeats[edgeFeats.size(0)//2:])/2 #average two directions of edge
+
+        edgeIndexes = edgeIndexes[:len(edgeIndexes)//2] #remove reverse edges
+
         #update BBs with node predictions
         useBBs = self.updateBBs(useBBs,groups,nodeOuts)
+
+        #save output for this GCN
         allOutputBoxes.append(useBBs.cpu()) 
         allNodeOuts.append(nodeOuts)
         allEdgeOuts.append(edgeOuts)
         allGroups.append(groups)
         allEdgeIndexes.append(edgeIndexes)
 
-        #print('graph 0:   bbs:{}, nodes:{}, edges:{}'.format(useBBs.size(0),nodeOuts.size(0),edgeOuts.size(0)))
-        #print('init num bbs:{}, num keep:{}')
-        
+        #for the rest of the GCNs
         for gIter,graphnet in enumerate(self.graphnets[1:]):
             if self.merge_first:
                 gIter+=1
             
             good_edges=None
-            #print('!D! {} before edge size: {}, bbs: {}, node size: {}, edge I size: {}'.format(gIter,edgeFeats.size(),len(useBBs),nodeFeats.size(),len(edgeIndexes)))
-            #print('      graph num edges: {}'.format(graph[1].size()))
+            #perform the merges, groupings, and prunings
             useBBs,graph,groups,edgeIndexes,bbTrans,embeddings,same_node_map,keep_edges=self.mergeAndGroup(
                     self.mergeThresh[gIter],
                     self.keepEdgeThresh[gIter],
@@ -2640,6 +2494,7 @@ class FUDGE(BaseModel):
 
 
             if self.reintroduce_features:
+                #recompute and reintroduce features
                 graph,last_node_visual_feats,last_edge_visual_feats = self.appendVisualFeatures(
                         gIter if self.merge_first else gIter+1,
                         useBBs,
@@ -2655,27 +2510,24 @@ class FUDGE(BaseModel):
                         last_node_visual_feats,
                         last_edge_visual_feats,
                         allEdgeIndexes[-1],
-                        debug_image=None,
                         good_edges=good_edges)
-            #print('graph 1-:   bbs:{}, nodes:{}, edges:{}'.format(useBBs.size(0),len(groups),len(edgeIndexes)))
             if len(edgeIndexes)==0:
-                break #we have no graph, so we can just end here
-            #print('!D! after  edge size: {}, bbs: {}, node size: {}, edge I size: {}'.format(graph[2].size(),len(useBBs),graph[0].size(),len(edgeIndexes)))
-            #print('      graph num edges: {}'.format(graph[1].size()))
-            #print('{} node feats mean:{:.3}, std:{:.3}, min:{:.2}, max:{:.2}'.format(gIter,graph[0].mean(),graph[0].std(),   graph[0].min(), graph[0].max()))
-            #print('  edge feats mean:{:.3}, std:{:.3}, min:{:.2}, max:{:.2}'.format(graph[2].mean(), graph[2].std(),  graph[2].min(), graph[2].max()))
+                break #we have no graph left, so we can just end here
+
+            #Run the next GCN
             nodeOuts, edgeOuts, nodeFeats, edgeFeats, uniFeats = graphnet(graph)
-            #edgeIndexes = edgeIndexes[:len(edgeIndexes)//2]
+
             useBBs = self.updateBBs(useBBs,groups,nodeOuts)
+
+            #store these outs
             allOutputBoxes.append(useBBs.cpu()) 
             allNodeOuts.append(nodeOuts)
             allEdgeOuts.append(edgeOuts)
             allGroups.append(groups)
             allEdgeIndexes.append(edgeIndexes)
+        #end GCN loop
 
-
-        ##Final state of the graph
-        #print('!D! F before edge size: {}, bbs: {}, node size: {}, edge I size: {}'.format(edgeFeats.size(),useBBs.size(),nodeFeats.size(),len(edgeIndexes)))
+        ##Final state of the graph, via a final edit step
         useBBs,graph,groups,edgeIndexes,bbTrans,_,same_node_map,keep_edges=self.mergeAndGroup(
                 self.mergeThresh[-1],
                 self.keepEdgeThresh[-1],
@@ -2683,51 +2535,36 @@ class FUDGE(BaseModel):
                 edgeIndexes,
                 edgeOuts.detach(),
                 groups,
-                None,#nodeFeats.detach(),
-                None,#edgeFeats.detach(),
-                None,#uniFeats.detach() if uniFeats is not None else None,
+                None,#we don't need features anymore
+                None,#
+                None,#
                 useBBs,
                 bbTrans,
                 None,
                 gt_groups=[[g] for g in range(len(groups))] if gtGroups is not None else None,
-                final=True)
-        #print('!D! after  edge size: {}, bbs: {}, node size: {}, edge I size: {}'.format(graph[2].size(),useBBs.size(),graph[0].size(),len(edgeIndexes)))
+                final=True #This tells it to use the relationship predictions to prune
+                )
         final=(useBBs.cpu().detach(),groups,edgeIndexes,bbTrans)
-        #print('all iters GCN')
-        #print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=10))
 
-        
-        
-
-
-        #adjacencyMatrix = torch.zeros((bbPredictions.size(1),bbPredictions.size(1)))
-        #for rel in relOuts:
-        #    i,j,a=graphToDetectionsMap(
-
-        
-            
-            
-                
-                
-                    
-
+        #return lots of things for all the supervision required
         return allOutputBoxes, allEdgeOuts, allEdgeIndexes, allNodeOuts, allGroups, rel_prop_scores,merge_prop_scores, final
 
 
-
+    #This aligns the GT bbs to the predicted ones and updates the GT with predicted class on conf information
     def alignGTBBs(self,useGTBBs,gtBBs,gtGroups,bbPredictions):
-            #We'll correct the box predictions using the GT BBs, but no class/other GT
             useBBs = []
-            gtBBs=gtBBs[0]
+            gtBBs=gtBBs[0] #assume a batch size of 1
 
 
             #perform greedy alignment of gt and predicted. Only keep aligned predictions
             if not bbPredictions.is_cuda:
                 gtBBs=gtBBs.cpu()
-            if 'word_bbs' in useGTBBs:
+
+            if 'word_bbs' in useGTBBs: #if these are the word BBs
                 ious = allIO_clipU(gtBBs,bbPredictions[:,1:],x1y1x2y2=False) #iou calculation, words are oversegmented lines
             else:
                 ious = allIOU(gtBBs,bbPredictions[:,1:],x1y1x2y2=False) #iou calculation
+
             ious=ious.cpu()
             bbPredictions=bbPredictions.cpu()
             gtBBs=gtBBs.cpu()
@@ -2768,7 +2605,7 @@ class FUDGE(BaseModel):
                     useBBs.append(torch.cat((conf,gtBBs[gt_i,0:5],cls),dim=0))
 
             if gtGroups is not None:
-                gtGroups = [[gt_to_new[gt_i] for gt_i in group] for group in gtGroups]
+                gtGroups = [[gt_to_new[gt_i] for gt_i in group] for group in gtGroups] #this just updating it
             if len(useBBs)>0:
                 useBBs = torch.stack(useBBs,dim=0).to(gtBBs.device)
             else:
