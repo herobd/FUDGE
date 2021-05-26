@@ -112,25 +112,29 @@ class GraphPairTrainer(BaseTrainer):
         self.use_gt_trans = config['trainer']['use_gt_trans'] if 'use_gt_trans' in config['trainer'] else False #we don't use any transcription
 
 
-
+        #I considered making more specific error response
         self.num_node_error_class = 0
         self.final_class_bad_alignment = False
         self.final_class_bad_alignment = False
         self.final_class_inpure_group = False
 
         self.debug = 'DEBUG' in  config['trainer']
-        self.save_images_every = config['trainer']['save_images_every'] if 'save_images_every' in config['trainer'] else 50
+
+        #will save the form image with the BBs and edges ploted on them
+        self.save_images_every = config['trainer']['save_images_every'] if 'save_images_every' in config['trainer'] else -1
         self.save_images_dir = 'train_out'
         util.ensure_dir(self.save_images_dir)
 
 
+        #ugh, I never got this to work. Kept NaNing. I don't use BatchNorm, so you don't have to worry about that
         self.amp = config['trainer']['AMP'] if 'AMP' in config['trainer'] else False
         if self.amp:
             self.scaler = torch.cuda.amp.GradScaler()
 
+        #fake a batch size by accumulating the gradient
         self.accum_grad_steps = config['trainer']['accum_grad_steps'] if 'accum_grad_steps' in config['trainer'] else 1
 
-        #Name change
+        #Name change, originally called it 'rel', but 'edge' makes more sense
         if 'edge' in self.lossWeights:
             self.lossWeights['rel'] = self.lossWeights['edge']
         if 'edge' in self.loss:
@@ -140,7 +144,7 @@ class GraphPairTrainer(BaseTrainer):
         self.remove_same_pairs = False if 'remove_same_pairs' not in config else config['remove_same_pairs']
         self.optimize = False if 'optimize' not in config else config['optimize']
 
-        
+        #This is only designed for FUNSD, but gives a very detailed analysis of performance
         self.do_characterization = config['characterization'] if 'characterization' in config else False
         if self.do_characterization:
             self.characterization_sum=defaultdict(int)
@@ -149,6 +153,7 @@ class GraphPairTrainer(BaseTrainer):
 
         self.model_ref.used_threshConf=0.5
 
+    #handy funtion to put the data on the GPU
     def _to_tensor(self, instance):
         image = instance['img']
         bbs = instance['bb_gt']
@@ -164,21 +169,7 @@ class GraphPairTrainer(BaseTrainer):
             #adjacenyMatrix = adjacenyMatrix.to(self.gpu)
         return image, bbs, adjaceny, num_neighbors
 
-    def _eval_metrics(self, typ,name,output, target):
-        if len(self.metrics[typ])>0:
-            #acc_metrics = np.zeros(len(self.metrics[typ]))
-            met={}
-            cpu_output=[]
-            for pred in output:
-                cpu_output.append(output.cpu().data.numpy())
-            target = target.cpu().data.numpy()
-            for i, metric in enumerate(self.metrics[typ]):
-                met[name+metric.__name__] = metric(cpu_output, target)
-            return acc_metrics
-        else:
-            #return np.zeros(0)
-            return {}
-
+    #whether to use the GT BBs for this iteration
     def useGT(self,iteration,force=False):
         if force:
             use=True
@@ -196,6 +187,8 @@ class GraphPairTrainer(BaseTrainer):
             return ret
         else:
             return False
+
+
     def _train_iteration(self, iteration):
         """
         Training logic for an iteration
@@ -221,10 +214,12 @@ class GraphPairTrainer(BaseTrainer):
         try:
             thisInstance = self.data_loader_iter.next()
         except StopIteration:
+            #I do everything by iterations, not epoch. So it resets the dataloader whenever it runs out
             self.data_loader_iter = iter(self.data_loader)
             thisInstance = self.data_loader_iter.next()
+
         if not self.model_ref.detector_predNumNeighbors:
-            thisInstance['num_neighbors']=None
+            thisInstance['num_neighbors']=None #we don't use num neighbors for FUDGE
         
         
         
@@ -240,8 +235,10 @@ class GraphPairTrainer(BaseTrainer):
             threshIntur = 1 - iteration/self.conf_thresh_change_iters
         else:
             threshIntur = None
+
         useGT = self.useGT(iteration)
 
+        #run the model and calculate the loss
         if self.amp:
             with torch.cuda.amp.autocast():
                 losses, run_log, out = self.newRun(thisInstance,useGT,threshIntur)
@@ -249,13 +246,14 @@ class GraphPairTrainer(BaseTrainer):
             losses, run_log, out = self.newRun(thisInstance,useGT,threshIntur)
         
 
-        
+        #weighted sum of losses
         loss=0
         for name in losses.keys():
             losses[name] *= self.lossWeights[name[:-4]]
             loss += losses[name]
             losses[name] = losses[name].item()
             
+        #backward step
         if len(losses)>0:
             assert not torch.isnan(loss)
             if self.accum_grad_steps>1:
@@ -276,6 +274,7 @@ class GraphPairTrainer(BaseTrainer):
         if count!=0:
             meangrad/=count
 
+        #gradient clipping (only happens if not accumulating)
         if self.accum_grad_steps<2 or iteration%self.accum_grad_steps==0:
             torch.nn.utils.clip_grad_value_(self.model.parameters(),1)
             if self.amp:
@@ -286,6 +285,7 @@ class GraphPairTrainer(BaseTrainer):
         
         if len(losses)>0:
             loss = loss.item()
+
         log = {
             'mean grad': meangrad,
             'loss': loss,
@@ -296,6 +296,7 @@ class GraphPairTrainer(BaseTrainer):
         
         return log
 
+    #how log will be printed
     def _minor_log(self, log):
         ls=''
         for i,(key,val) in enumerate(log.items()):
@@ -313,15 +314,12 @@ class GraphPairTrainer(BaseTrainer):
                 ls+='\n      '
         self.logger.info('Train '+ls)
     
-    #New
+    
     def _valid_epoch(self):
         """
-        Validate after training an epoch
+        Validate entire valid set
 
         :return: A log that contains information about validation
-
-        Note:
-            The validation metrics in log must have the key 'val_metrics'.
         """
         self.model.eval()
 
@@ -329,7 +327,7 @@ class GraphPairTrainer(BaseTrainer):
         val_count = defaultdict(lambda: 1)
 
         useGT = self.useGT(self.iteration,True) if self.valid_with_gt else False
-        prefix = 'valGT_' if self.valid_with_gt else 'val_'
+        prefix = 'valGT_' if self.valid_with_gt else 'val_' #just so I don't get confused
 
 
         with torch.no_grad():
@@ -338,10 +336,9 @@ class GraphPairTrainer(BaseTrainer):
                     instance['num_neighbors']=None
                 if not self.logged:
                     print('iter:{} valid batch: {}/{}'.format(self.iteration,batch_idx,len(self.valid_data_loader)), end='\r')
-                if self.mergeAndGroup:
-                    losses,log_run, out = self.newRun(instance,useGT,get=['bb_stats','nn_acc'])
-                else:
-                    losses,log_run, out = self.run(instance,useGT,get=['bb_stats','nn_acc'])
+
+                #run model and compute losses
+                losses,log_run, out = self.newRun(instance,useGT,get=['bb_stats','nn_acc'])
 
                 for name,value in log_run.items():
                     if value is not None:
@@ -368,18 +365,19 @@ class GraphPairTrainer(BaseTrainer):
                 val_metrics[val_name] =  val_metrics[val_name]/val_count[val_name]
         return val_metrics
 
+
     #This aligns the predicted boxes to the target ones, figures out the labels for edges
     def simplerAlignEdgePred(self,
-            targetBoxes,
-            targetIndexToGroup,
-            gtGroupAdj,
-            outputBoxes, #detector predictions (but the class is updated from node predictions)
-            edgePred, #graph edge predictions
-            edgePredIndexes, #node (group) indexes for edges
-            predGroups, #outputBoxes indexes for each node
-            rel_prop_pred, #the proposal prediction
-            thresh_edge,
-            thresh_rel,
+            targetBoxes,        #GT BBs
+            targetIndexToGroup, #dictionary from BB index to GT group index
+            gtGroupAdj,         #GT relationships (group index pairs)
+            outputBoxes,        #detector predictions (but the class is updated from node predictions)
+            edgePred,           #graph edge predictions
+            edgePredIndexes,    #node (group) indexes for edges
+            predGroups,         #outputBoxes indexes for each node
+            rel_prop_pred,      #the proposal prediction
+            thresh_edge,        #the thresholds to use
+            thresh_rel,         #"
             thresh_overSeg,
             thresh_group,
             thresh_error,
@@ -414,7 +412,6 @@ class GraphPairTrainer(BaseTrainer):
                 'FmError' : Fm
                 }
             
-            #return torch.tensor([]),torch.tensor([]), targIndex, torch.ones(outputBoxes.size(0)), None, log
             predsGTYes = torch.tensor([])
             predsGTNo = torch.tensor([])
             matches=0
@@ -423,7 +420,6 @@ class GraphPairTrainer(BaseTrainer):
         else:
 
             #decide which predicted boxes belong to which target boxes
-            #should this be the same as AP_?
             numClasses = self.model_ref.numBBTypes
 
             
@@ -439,15 +435,12 @@ class GraphPairTrainer(BaseTrainer):
                     targIndex = newGetTargIndexForPreds_iou(targetBoxes[0],outputBoxes,0.4,numClasses,True)
                 targIndex = targIndex.numpy()
             else:
-                #targIndex=torch.LongTensor(len(outputBoxes)).fill_(-1)
                 targIndex = [-1]*len(outputBoxes)
-            
-            
             
 
             #Create gt vector to match edgePred
             #the MetaGraph was coded to allow in internal recursive loop like the Universal Transformer.
-            predsEdge = edgePred[...,0] 
+            predsEdge = edgePred[...,0]  
             assert(not torch.isnan(predsEdge).any())
             predsGTEdge = []
             predsGTNoEdge = []
@@ -498,6 +491,7 @@ class GraphPairTrainer(BaseTrainer):
             nweRs = [node_to_nwe_index[n] for n in nodeRs]
 
             #get information for that subset of nodes
+            #were going to do a lot of vectorized logic for speed
             compute = [(
                 len(predGroupsT[n0]), #how many bbs
                 len(predGroups[n0]),
@@ -511,14 +505,17 @@ class GraphPairTrainer(BaseTrainer):
             
             #expand information into row and column matrices to allow all-to-all node comparisons
             g_target_len, g_len, GTGroups, purities, ts_0 = zip(*compute)
+
+            #get the predicted edges with aligned GTGroup ids
             gtNE = [(GTGroups[node_to_nwe_index[n0]],GTGroups[node_to_nwe_index[n1]])  for n0,n1 in edgePredIndexes]
 
             g_target_len = torch.IntTensor(g_target_len).to(edge_loss_device)
             g_len = torch.IntTensor(g_len).to(edge_loss_device)
             purities = torch.FloatTensor(purities).to(edge_loss_device)
-            ts_0 = torch.IntTensor(ts_0).to(edge_loss_device)
+            ts_0 = torch.IntTensor(ts_0).to(edge_loss_device) #head (first BB in group)
             GTGroups = torch.IntTensor(GTGroups).to(edge_loss_device)
 
+            #get the subset of information
             g_target_len_L = g_target_len[nweLs]
             g_target_len_R = g_target_len[nweRs]
             g_len_R = g_len[nweRs]
@@ -534,8 +531,8 @@ class GraphPairTrainer(BaseTrainer):
 
 
             #which edges are GT ones
-            gtNE = [(min(gtGroup0,gtGroup1),max(gtGroup0,gtGroup1)) for gtGroup0,gtGroup1 in gtNE]
-            gtGroupAdjMat = [pair in gtGroupAdj for pair in gtNE]
+            gtNE = [(min(gtGroup0,gtGroup1),max(gtGroup0,gtGroup1)) for gtGroup0,gtGroup1 in gtNE] #order as the gt is
+            gtGroupAdjMat = [pair in gtGroupAdj for pair in gtNE] #which are real relationships
             gtGroupAdjMat = torch.BoolTensor(gtGroupAdjMat).to(edge_loss_device)
 
             hit_rels = set(gtNE)
@@ -544,11 +541,14 @@ class GraphPairTrainer(BaseTrainer):
             
 
             #common conditions
-            bothTarged = (g_target_len_R>0)*(g_target_len_L>0)
-            badTarged = (g_target_len_R==0)+(g_target_len_L==0)
-            bothPure = (purity_R>0.8)*(purity_L>0.8)
+            bothTarged = (g_target_len_R>0)*(g_target_len_L>0) #The both each have atleast one aligned BB
+            badTarged = (g_target_len_R==0)+(g_target_len_L==0) #neighter have any aligned BBs
+            bothPure = (purity_R>0.8)*(purity_L>0.8) #both are mostly BBs belonging the GT group
             
             #Actually start determining GT/training scenarios
+            #we compute True and False scenarios. If an edge doesn't fit either (e.g. it's impure) then it does not contribute to the loss
+            #remember * is 'and' + is 'or' and ~ is 'not'
+
             wasRel = bothTarged*((g_len_L>1)+(g_len_R>1)+~same_ts_0)*bothPure*~same_GTGroups*gtGroupAdjMat
             wasNoRel = (badTarged+(bothTarged*((g_len_L>1)+(g_len_R>1)+~same_ts_0)*bothPure*~same_GTGroups*~gtGroupAdjMat))
             
@@ -561,7 +561,7 @@ class GraphPairTrainer(BaseTrainer):
             wasError = bothTarged*((purity_R<1)+(purity_L<1))
             wasNoError = bothTarged*~((purity_R<1)+(purity_L<1))
 
-            #build vectors for loss, score results, and indicate each edges case (saveEdgePred)
+            #build tensors for loss computation, score results, and indicate each edge's case (saveEdgePred)
             saveIndex={'TP':1,'TN':2,'FP':3,'FN':4,'UP':5,'UN':6}
             revSaveIndex={v:k for k,v in saveIndex.items()}
 
@@ -571,12 +571,12 @@ class GraphPairTrainer(BaseTrainer):
 
             shouldBeEdge = wasRel+wasOverSeg+wasGroup
 
-
+            #For relationships
             predsRelAboveThresh = torch.sigmoid(predsRel[:,-1])>thresh_rel
             saveRelPredMat = torch.IntTensor(len(edgePredIndexes)).zero_()
 
-            predsGTRel = predsRel[wasRel]
-            predsGTNoRel = predsRel[wasNoRel]
+            predsGTRel = predsRel[wasRel] #this is the tensor of predictions which need a True GT applied
+            predsGTNoRel = predsRel[wasNoRel] #this tensor needs a False GT applied
             TP = wasRel*predsRelAboveThresh
             truePosRel = TP.sum().item()
             saveRelPredMat[TP]=saveIndex['TP']
@@ -589,14 +589,14 @@ class GraphPairTrainer(BaseTrainer):
             TN = wasNoRel*~predsRelAboveThresh
             trueNegRel = TN.sum().item()
             saveRelPredMat[TN]=saveIndex['TN']
-            unk = ~wasRel*~wasNoRel
+            unk = ~wasRel*~wasNoRel #unknown, we didn't calculate a GT
             UP = unk*predsRelAboveThresh
             saveRelPredMat[UP]=saveIndex['UP']
             UN = unk*~predsRelAboveThresh
             saveRelPredMat[UN]=saveIndex['UN']
             saveRelPred ={i:revSaveIndex[saveRelPredMat[i].item()] for i in range(len(edgePredIndexes)) if saveRelPredMat[i]>0}
 
-
+            #For grouping
             predsGroupAboveThresh = torch.sigmoid(predsGroup[:,-1])>thresh_group
             saveGroupPredMat = torch.IntTensor(len(edgePredIndexes)).zero_()
 
@@ -621,7 +621,7 @@ class GraphPairTrainer(BaseTrainer):
             saveGroupPredMat[UN]=saveIndex['UN']
             saveGroupPred ={i:revSaveIndex[saveGroupPredMat[i].item()] for i in range(len(edgePredIndexes)) if saveGroupPredMat[i]>0}
 
-
+            #For overseg/merge
             predsOverSegAboveThresh = torch.sigmoid(predsOverSeg[:,-1])>thresh_overSeg
             saveOverSegPredMat = torch.IntTensor(len(edgePredIndexes)).zero_()
 
@@ -650,7 +650,7 @@ class GraphPairTrainer(BaseTrainer):
             saveOverSegPredMat[UN]=saveIndex['UN']
             saveOverSegPred ={i:revSaveIndex[saveOverSegPredMat[i].item()] for i in range(len(edgePredIndexes)) if saveOverSegPredMat[i]>0}
 
-
+            #For error
             predsErrorAboveThresh = torch.sigmoid(predsError[:,-1])>thresh_error
             saveErrorPredMat = torch.IntTensor(len(edgePredIndexes)).zero_()
 
@@ -675,6 +675,7 @@ class GraphPairTrainer(BaseTrainer):
             saveErrorPredMat[UN]=saveIndex['UN']
             saveErrorPred ={i:revSaveIndex[saveErrorPredMat[i].item()] for i in range(len(edgePredIndexes)) if saveErrorPredMat[i]>0}
 
+            #For keep edge/prune
             predsGTEdge = predsEdge[shouldBeEdge]
             TP=shouldBeEdge*predsEdgeAboveThresh
             truePosEdge = TP.sum().item()
@@ -682,7 +683,6 @@ class GraphPairTrainer(BaseTrainer):
             FN=shouldBeEdge*~predsEdgeAboveThresh
             falseNegEdge = FN.sum().item()
             saveEdgePredMat[FN]=saveIndex['FN']
-            #missedGTRel TODO
             for ind in torch.nonzero(FN):
                 missed_rels.add(gtNE[ind.item()])
 
@@ -705,10 +705,14 @@ class GraphPairTrainer(BaseTrainer):
             
             
             
-            
+            #all predictions with True GT
             predsGTYes = torch.cat((predsGTEdge,predsGTRel,predsGTOverSeg,predsGTGroup,predsGTError),dim=0)
+
+            #all predicitons with False GT
             predsGTNo = torch.cat((predsGTNoEdge,predsGTNoRel,predsGTNotOverSeg,predsGTNoGroup,predsGTNoError),dim=0)
 
+
+            #calcuate scores (for this GCN iteration)
             recallEdge = truePosEdge/(truePosEdge+falseNegEdge) if truePosEdge+falseNegEdge>0 else 1
             precEdge = truePosEdge/(truePosEdge+falsePosEdge) if truePosEdge+falsePosEdge>0 else 1
 
@@ -748,11 +752,12 @@ class GraphPairTrainer(BaseTrainer):
 
 
         if rel_prop_pred is not None:
+            #Compute GT for the relationship proposal
 
             relPropScores,relPropIds, threshPropRel = rel_prop_pred
 
-            #print('\tcount rel prop: {}'.format(len(relPropIds)))
-            
+            #This is a little different as we have no predicted groups to worry about
+            #something needs an edge it it is to be merged, grouped, or has a relationship
             truePropPred=falsePropPred=falseNegProp=0
             propPredsPos=[]
             propPredsNeg=[]
@@ -762,16 +767,16 @@ class GraphPairTrainer(BaseTrainer):
                 isEdge=False
                 if t0>=0 and t1>=0:
                     if t0==t1:
-                        isEdge=True
+                        isEdge=True #merge
                     else:
-                        gtGroup0 = targetIndexToGroup[t0]#getGTGroup([t0],gtGroups)
-                        gtGroup1 = targetIndexToGroup[t1]#getGTGroup([t1],gtGroups)
+                        gtGroup0 = targetIndexToGroup[t0]
+                        gtGroup1 = targetIndexToGroup[t1]
                         
                         if gtGroup0==gtGroup1:
-                            isEdge=True
+                            isEdge=True #group
                         else:
                             if (min(gtGroup0,gtGroup1),max(gtGroup0,gtGroup1)) in gtGroupAdj:
-                                isEdge=True
+                                isEdge=True #relationship
                 if isEdge:
                     propPredsPos.append(relPropScores[i])
                     if relPropScores[i]>threshPropRel:
@@ -809,33 +814,42 @@ class GraphPairTrainer(BaseTrainer):
 
 
 
+    #This runs the model on the data and calcuates the losses and scores
+    def newRun(self,
+            instance,           #dict returned by dataset
+            useGT,              #whether to use GT BBs
+            threshIntur=None,   #should always be None in FUDGE, but manipluates detection threshold
+            get=[],             #extra data to return
+            forward_only=False):
 
-    def newRun(self,instance,useGT,threshIntur=None,get=[],forward_only=False):#,useOnlyGTSpace=False,useGTGroups=False):
-        assert(not self.model_ref.predNN)
         numClasses = len(self.classMap)
+
+        #to GPU
         image, targetBoxes, adj, target_num_neighbors = self._to_tensor(instance)
+
         gtGroups = instance['gt_groups']
         gtGroupAdj = instance['gt_groups_adj']
         targetIndexToGroup = instance['targetIndexToGroup']
         targetIndexToGroup = instance['targetIndexToGroup']
         
+        #no trans used
         if self.use_gt_trans:
             if useGT and 'word_bbs' in useGT:
                 gtTrans = instance['form_metadata']['word_trans']
             else:
                 gtTrans = instance['transcription']
-            #if (gtTrans)==0:
-            #    gtTrans=None
             
         else:
             gtTrans = None
         
+        #Format the gt BBs like the detection output. Also applies a small amount of noise
         if useGT and len(useGT)>0:
             numBBTypes = self.model_ref.numBBTypes
             if 'word_bbs' in useGT: #useOnlyGTSpace and self.use_word_bbs_gt:
                 word_boxes = instance['form_metadata']['word_boxes'][None,:,:,].to(targetBoxes.device) #I can change this as it isn't used later
                 targetBoxes_changed=word_boxes
                 if self.model.training:
+                    #noise
                     targetBoxes_changed[:,:,0] += torch.randn_like(targetBoxes_changed[:,:,0])
                     targetBoxes_changed[:,:,1] += torch.randn_like(targetBoxes_changed[:,:,1])
                     if self.model_ref.rotation:
@@ -849,6 +863,7 @@ class GraphPairTrainer(BaseTrainer):
             elif targetBoxes is not None:
                 targetBoxes_changed=targetBoxes.clone()
                 if self.model.training:
+                    #noise
                     targetBoxes_changed[:,:,0] += torch.randn_like(targetBoxes_changed[:,:,0])
                     targetBoxes_changed[:,:,1] += torch.randn_like(targetBoxes_changed[:,:,1])
                     if self.model_ref.rotation:
@@ -857,16 +872,14 @@ class GraphPairTrainer(BaseTrainer):
                     targetBoxes_changed[:,:,4] += torch.randn_like(targetBoxes_changed[:,:,4])
                     targetBoxes_changed[:,:,3][targetBoxes_changed[:,:,3]<1]=1
                     targetBoxes_changed[:,:,4][targetBoxes_changed[:,:,4]<1]=1
-                    #we tweak the classes in the model
             else:
                 targetBoxes_changed = None
 
             if 'only_space' in useGT and targetBoxes_changed is not None:
-                targetBoxes_changed[:,:,5:]=0 #zero out other information to ensure results aren't contaminated
-                #useCurved doesnt include class
+                targetBoxes_changed[:,:,5:]=0 #zero out class information to ensure results aren't contaminated
 
 
-
+            #run the model with the GT
             allOutputBoxes, outputOffsets, allEdgePred, allEdgeIndexes, allNodePred, allPredGroups, rel_prop_pred,merge_prop_scores, final = self.model(
                                 image,
                                 targetBoxes_changed,
@@ -878,6 +891,7 @@ class GraphPairTrainer(BaseTrainer):
                                 gtTrans = gtTrans,
                                 gtGroups = gtGroups if 'groups' in useGT else None)
         else:
+            #run the model (no GT)
             allOutputBoxes, outputOffsets, allEdgePred, allEdgeIndexes, allNodePred, allPredGroups, rel_prop_pred,merge_prop_scores, final = self.model(image,
                     targetBoxes if gtTrans is not None else None,
                     otherThresh=self.conf_thresh_init, 
@@ -888,10 +902,9 @@ class GraphPairTrainer(BaseTrainer):
             return
         
         
-        ### TODO code prealigned
         losses=defaultdict(lambda:0)
         log={}
-        #for graphIteration in range(len(allEdgePred)):
+
         allEdgePredTypes=[]
         allMissedRels=[]
         allBBAlignment=[]
@@ -899,13 +912,14 @@ class GraphPairTrainer(BaseTrainer):
         mergeProposedInfo=None
 
 
-       # print('effective prop thresh: {:.3f}, raw: {:.3f}'.format(torch.sigmoid(torch.FloatTensor([rel_prop_pred[-1]])).item(),rel_prop_pred[-1]))
 
         if allEdgePred is not None:
+            #We'll go through and calculate the loss (and scores) for each GCN output
             for graphIteration,(outputBoxes,edgePred,nodePred,edgeIndexes,predGroups) in enumerate(zip(allOutputBoxes,allEdgePred,allNodePred,allEdgeIndexes,allPredGroups)):
 
 
-                
+                #This sets up all the edges for loss caclulation
+                # we also reuse bbAlignment later
                 predEdgeShouldBeTrue,predEdgeShouldBeFalse, bbAlignment, proposedInfoI, logIter, edgePredTypes, missedRels = self.simplerAlignEdgePred(
                         targetBoxes,
                         targetIndexToGroup,
@@ -929,6 +943,7 @@ class GraphPairTrainer(BaseTrainer):
                 if graphIteration==0:
                     proposedInfo=proposedInfoI
 
+                #loss for node class predictions
                 if self.model_ref.predClass and nodePred is not None:
                     node_pred_use_index=[]
                     node_gt_use_class_indexes=[]
@@ -936,7 +951,7 @@ class GraphPairTrainer(BaseTrainer):
                     alignedClass_use_sp=[]
 
                     node_conf_use_index=[]
-                    node_conf_gt=[]#torch.FloatTensor(len(predGroups))
+                    node_conf_gt=[]
 
                     for i,predGroup in enumerate(predGroups):
                         ts=[bbAlignment[pId] for pId in predGroup]
@@ -963,6 +978,7 @@ class GraphPairTrainer(BaseTrainer):
                         if type(targetClass) is str:
                             node_pred_use_index.append(i)
                             node_gt_use_class_indexes.append(classesIndexes[targetClass])
+                        #we don't use the error stuff on nodes
                         elif targetClass==-1 and self.final_class_bad_alignment:
                             node_pred_use_index_sp.append(i)
                             error_class = torch.FloatTensor(1,len(self.classMap)+self.num_node_error_class).zero_()
@@ -980,8 +996,6 @@ class GraphPairTrainer(BaseTrainer):
                         elif misses==0 or hits/misses>0.5:
                             node_conf_use_index.append(i)
                             node_conf_gt.append(1)
-                        #if 0 in predGroup:
-                            #import pdb;pdb.set_trace()
 
                     node_pred_use_index += node_pred_use_index_sp
 
@@ -1006,24 +1020,10 @@ class GraphPairTrainer(BaseTrainer):
                     nodePredConf_use = None
                     nodeGTConf_use = None
 
-                ####
-
-
-                #if edgePred is not None:
-                #    numEdgePred = edgePred.size(0)
-                #    if predEdgeShouldBeTrue is not None:
-                #        lenTrue = predEdgeShouldBeTrue.size(0)
-                #    else:
-                #        lenTrue = 0
-                #    if predEdgeShouldBeFalse is not None:
-                #        lenFalse = predEdgeShouldBeFalse.size(0)
-                #    else:
-                #        lenFalse = 0
-                #else:
-                #    numEdgePred = lenTrue = lenFalse = 0
-
                 relLoss = None
                 #separating the loss into true and false portions is not only convienint, it balances the loss between true/false examples
+
+                #compute True edge losses
                 if predEdgeShouldBeTrue is not None and predEdgeShouldBeTrue.size(0)>0 and predEdgeShouldBeTrue.size(1)>0:
                     ones = torch.ones_like(predEdgeShouldBeTrue).to(image.device)
                     relLoss = self.loss['rel'](predEdgeShouldBeTrue,ones)
@@ -1031,6 +1031,8 @@ class GraphPairTrainer(BaseTrainer):
                     debug_avg_relTrue = predEdgeShouldBeTrue.mean().item()
                 else:
                     debug_avg_relTrue =0 
+
+                #compute False edge losses
                 if predEdgeShouldBeFalse is not None and predEdgeShouldBeFalse.size(0)>0 and predEdgeShouldBeFalse.size(1)>0:
                     zeros = torch.zeros_like(predEdgeShouldBeFalse).to(image.device)
                     relLossFalse = self.loss['rel'](predEdgeShouldBeFalse,zeros)
@@ -1042,11 +1044,13 @@ class GraphPairTrainer(BaseTrainer):
                     debug_avg_relFalse = predEdgeShouldBeFalse.mean().item()
                 else:
                     debug_avg_relFalse = 0
+
+                #combine
                 if relLoss is not None:
-                    #relLoss *= self.lossWeights['rel']
                     losses['relLoss']+=relLoss
 
                 if proposedInfoI is not None:
+                    #same thing for edge proposal
                     propPredPairingShouldBeTrue,propPredPairingShouldBeFalse= proposedInfoI[0:2]
                     propRelLoss = None
                     #seperating the loss into true and false portions is not only convienint, it balances the loss between true/false examples
@@ -1068,26 +1072,25 @@ class GraphPairTrainer(BaseTrainer):
 
 
                 if self.model_ref.predClass and nodePredClass_use is not None and nodePredClass_use.size(0)>0:
+                    #loss for classes
                     alignedClass_use = alignedClass_use[:,None] #introduce "time" dimension to broadcast
                     class_loss_final = self.loss['classFinal'](nodePredClass_use,alignedClass_use)
                     losses['classFinalLoss'] += class_loss_final
-
+    
+                
                 if nodePredConf_use is not None and nodePredConf_use.size(0)>0:
+                    #loss for node confidence (not really used)
                     if len(nodeGTConf_use.size())<len(nodePredConf_use.size()):
                         nodeGTConf_use = nodeGTConf_use[:,None] #introduce "time" dimension to broadcast
                     conf_loss_final = self.loss['classFinal'](nodePredConf_use,nodeGTConf_use)
                     losses['confFinalLoss'] += conf_loss_final
-                    #class_loss_final *= self.lossWeights['class']
-                    #loss += class_loss_final
-                    #class_loss_final = class_loss_final.item()
-                #else:
-                    #class_loss_final = 0
 
                 for name,stat in logIter.items():
                     log['{}_{}'.format(name,graphIteration)]=stat
 
                 if self.save_images_every>0 and self.iteration%self.save_images_every==0:
-                    path = os.path.join(self.save_images_dir,'{}_{}.png'.format('b',graphIteration))#instance['name'],graphIteration))
+                    #print the images
+                    path = os.path.join(self.save_images_dir,'{}_{}.png'.format('b',graphIteration))
                     
                     draw_graph(
                             outputBoxes,
@@ -1110,13 +1113,6 @@ class GraphPairTrainer(BaseTrainer):
 
                 if 'bb_stats' in get:
 
-                    #if self.model_ref.detector.predNumNeighbors:
-                    #    beforeCls=1
-                    #    #outputBoxesM=torch.cat((outputBoxes[:,0:6],outputBoxes[:,7:]),dim=1) #throw away NN pred
-                    #else:
-                    #    beforeCls=0
-                    #if targetBoxes is not None:
-                    #    targetBoxes = targetBoxes.cpu()
                     if targetBoxes is not None:
                         target_for_b = targetBoxes[0].cpu()
                     else:
@@ -1134,14 +1130,14 @@ class GraphPairTrainer(BaseTrainer):
                     log['bb_allRecall_{}'.format(graphIteration)]=allRecall
                     log['bb_allFm_{}'.format(graphIteration)]= 2*allPrec*allRecall/(allPrec+allRecall) if allPrec+allRecall>0 else 0
 
-        #Fine tuning detector. Should only happed once
+        #Fine tuning detector.
         if not self.model_ref.detector_frozen:
             if targetBoxes is not None:
                 targSize = targetBoxes.size(1)
             else:
                 targSize =0 
 
-            tic2=timeit.default_timer()
+            #calculate YOLO loss
             if 'box' in self.loss:
                 boxLoss, position_loss, conf_loss, class_loss, nn_loss, recall, precision, recall_noclass,precision_noclass = self.loss['box'](outputOffsets,targetBoxes,[targSize],target_num_neighbors)
                 losses['boxLoss'] += boxLoss
@@ -1149,17 +1145,6 @@ class GraphPairTrainer(BaseTrainer):
                 log['bb_conf_loss'] = conf_loss
                 log['bb_class_loss'] = class_loss
                 log['bb_nn_loss'] = nn_loss
-            elif 'overseg' in self.loss:
-                oversegLoss, position_loss, conf_loss, class_loss, rot_loss, recall, precision, gt_covered, pred_covered, recall_noclass, precision_noclass, gt_covered_noclass, pred_covered_noclass = self.loss['overseg'](outputOffsets,targetBoxes,[targSize],calc_stats='bb_stats' in get)
-                losses['oversegLoss'] = oversegLoss
-                log['bb_position_loss'] = position_loss
-                log['bb_conf_loss'] = conf_loss
-                log['bb_class_loss'] = class_loss
-                if 'bb_stats' in get:
-                    log['bb_recall_noclass']=recall_noclass
-                    log['bb_precision_noclass']=precision_noclass
-                    log['bb_gt_covered_noclass']=gt_covered_noclass
-                    log['bb_pred_covered_noclass']=pred_covered_noclass
             elif 'init_class' in self.loss:
                 assert 'word_bbs' in useGT
                 init_class_pred = outputOffsets
@@ -1168,8 +1153,8 @@ class GraphPairTrainer(BaseTrainer):
 
         #We'll use information from the final prediction before the final pruning
         if 'DocStruct' in get:
+            #Compute hit@1
             predToGTGroup={}
-            #gtGroupToPred={}
             for node in range(len(predGroups)):
                 predTargGroup = [bbAlignment[bb] for bb in predGroups[node] if bbAlignment[bb]>=0]
                 if len(predTargGroup)>0:
@@ -1224,20 +1209,19 @@ class GraphPairTrainer(BaseTrainer):
             
             
 
-            #TODO missed rels (nodes)
-
         
         
-        #print final state of graph
-        ###
         gt_groups_adj = instance['gt_groups_adj']
         if final is not None:
+            #We now to the final scoring on the final graph.
             if self.remove_same_pairs:
-                final = self.removeSamePairs(final)
+                final = self.removeSamePairs(final) #was used to eval against old model
             finalLog, finalRelTypes, finalMissedRels, finalMissedGroups = self.finalEval(targetBoxes.cpu() if targetBoxes is not None else None,gtGroups,gt_groups_adj,targetIndexToGroup,*final,bb_iou_thresh=self.final_bb_iou_thresh)
             log.update(finalLog)
+
             if self.save_images_every>0 and self.iteration%self.save_images_every==0:
-                path = os.path.join(self.save_images_dir,'{}_{}.png'.format('b','final'))#instance['name'],graphIteration))
+                #also print the final graph image
+                path = os.path.join(self.save_images_dir,'{}_{}.png'.format('b','final'))
                 finalOutputBoxes, finalPredGroups, finalEdgeIndexes, finalBBTrans = final
                 draw_graph(
                         finalOutputBoxes,
@@ -1257,7 +1241,6 @@ class GraphPairTrainer(BaseTrainer):
                         useTextLines=False,
                         targetGroups=instance['gt_groups'],
                         targetPairs=instance['gt_groups_adj'])
-                #print('saved {}'.format(path))
             finalOutputBoxes, finalPredGroups, finalEdgeIndexes, finalBBTrans = final
             if self.do_characterization:
                 self.characterization_eval(
@@ -1273,16 +1256,6 @@ class GraphPairTrainer(BaseTrainer):
                             targetIndexToGroup,
                             gtGroups,
                             gtGroupAdj)
-            #print('DEBUG final num node:{}, num edges: {}'.format(len(finalOutputBoxes) if finalOutputBoxes is not None else 0,len(finalEdgeIndexes) if finalEdgeIndexes is not None else 0))
-        ###
-        
-        #log['rel_prec']= fullPrec
-        #log['rel_recall']= eRecall
-        #log['rel_Fm']= 2*(fullPrec*eRecall)/(eRecall+fullPrec) if eRecall+fullPrec>0 else 0
-        
-
-
-
 
         if proposedInfo is not None:
             propRecall,propPrec = proposedInfo[2:4]
@@ -1292,16 +1265,12 @@ class GraphPairTrainer(BaseTrainer):
             propRecall,propPrec = mergeProposedInfo[2:4]
             log['prop_merge_recall'] = propRecall
             log['prop_merge_prec'] = propPrec
-        #if final_prop_rel_recall is not None:
-        #    log['final_prop_rel_recall']=final_prop_rel_recall
-        #if final_prop_rel_prec is not None:
-        #    log['final_prop_rel_prec']=final_prop_rel_prec
 
 
 
 
-
-        got={}#outputBoxes, outputOffsets, relPred, relIndexes, bbPred, rel_prop_pred
+        #collect extra information to return. Used in various eval and debugging situations
+        got={}
         for name in get:
             if name=='edgePred':
                 got['edgePred'] = edgePred.detach().cpu()
@@ -1346,6 +1315,8 @@ class GraphPairTrainer(BaseTrainer):
                 raise NotImplementedError('Cannot get [{}], unknown'.format(name))
         return losses, log, got
 
+
+    #removes relationship predictions between nodes with the same predicted class
     def removeSamePairs(self,final):
         outputBoxes,predGroups,predPairs,predTrans = final
         new_pairs = []
@@ -1362,12 +1333,13 @@ class GraphPairTrainer(BaseTrainer):
                 new_pairs.append((g0,g1))
         return outputBoxes,predGroups,new_pairs,predTrans
             
-
+    #Do the final scoring
     def finalEval(self,targetBoxes,gtGroups,gt_groups_adj,targetIndexToGroup,outputBoxes,predGroups,predPairs,predTrans=None, bb_iou_thresh=0.5):
         log={}
         numClasses = len(self.scoreClassMap)
 
         #Remove blanks
+        #  I at onepoint had the model predicint blank BBs, but it didn't help like we thought it should
         if 'blank' in self.classMap:
             blank_index = self.classMap['blank']
             if targetBoxes is not None:
@@ -1429,17 +1401,14 @@ class GraphPairTrainer(BaseTrainer):
         elif outputBoxes is not None:
             targIndex=torch.LongTensor(len(outputBoxes)).fill_(-1)
 
-        #if self.model_ref.detector.predNumNeighbors:
-        #    beforeCls=1
-        #    #outputBoxesM=torch.cat((outputBoxes[:,0:6],outputBoxes[:,7:]),dim=1) #throw away NN pred
-        #else:
-        #    beforeCls=0
-        #if targetBoxes is not None:
-        #    targetBoxes = targetBoxes.cpu()
+
+
         if targetBoxes is not None:
             target_for_b = targetBoxes[0].cpu()
         else:
             target_for_b = torch.empty(0)
+
+        #Detection scores
         if self.model_ref.rotation:
             ap_5, prec_5, recall_5, allPrec, allRecall =AP_dist(target_for_b,outputBoxes,0.9,numClasses)
         else:
@@ -1467,6 +1436,8 @@ class GraphPairTrainer(BaseTrainer):
         BROS_head_to_group = {group[0]:i for i,group in enumerate(gtGroups)}
 
         
+        #while in the loss computation a node needed to be only mostly "pure"
+        # here, it must contian all and only the BBs of the GT group (purity==1)
         gtGroupHit=[False]*len(gtGroups)
         gtGroupHit_pure=[False]*len(gtGroups)
         groupCompleteness={}
