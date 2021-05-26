@@ -83,7 +83,7 @@
         "use_word_bbs_gt": 0.5,
         "max_use_pred": 0.33,
         "valid_with_gt": true,
-        "use_all_bb_pred_for_rel_loss": true,
+        
 
         "use_learning_schedule": "multi_rise then ramp_to_swa",
 "ramp_down_steps": 10000,
