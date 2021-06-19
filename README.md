@@ -15,7 +15,7 @@ This code is licensed under GNU GPL v3. If you would like it distributed to you 
 
 ## Pre-trained Model weights
 
-See "Releases"
+See `pretrained.tar.gz` in "Releases"
 
 
 ## Reproducability instructions
