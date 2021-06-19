@@ -18,7 +18,7 @@ except:
 
 import torch.autograd.profiler as profile
 
-#check for DocStruct hit@1 evaluation
+#check that is part of DocStruct hit@1 evaluation
 def maxRelScoreIsHit(child_groups,parent_groups,edgeIndexes,edgePred):
     max_score=-1
     max_score_is_hit=False
@@ -549,15 +549,23 @@ class GraphPairTrainer(BaseTrainer):
             #we compute True and False scenarios. If an edge doesn't fit either (e.g. it's impure) then it does not contribute to the loss
             #remember * is 'and' + is 'or' and ~ is 'not'
 
+            #it is a relationship/link if both are aligned to GT bbs AND this isn't a merge AND they both are pure AND they don't belong to the same GT group AND there is a GT link between their aligned GT groups
             wasRel = bothTarged*((g_len_L>1)+(g_len_R>1)+~same_ts_0)*bothPure*~same_GTGroups*gtGroupAdjMat
+
+            #there is no relationship/link if neither are aligned OR (they are aligned AND this isn't a merge AND they are pure AND they are not the same GT group AND there is not GT link)
             wasNoRel = (badTarged+(bothTarged*((g_len_L>1)+(g_len_R>1)+~same_ts_0)*bothPure*~same_GTGroups*~gtGroupAdjMat))
             
+            #this is not a merge if they aren't aligned OR (they are aligned And pure AND either one has multiple BBs or they aren't aligned to the same GT BB)
             wasNoOverSeg = (badTarged+(bothTarged*bothPure*~((g_len_R==1)*(g_len_L==1)*same_ts_0)))
+            #This is a merge if they are both aligned, they both have only one BB and have the same GT BB
             wasOverSeg = bothTarged*(g_len_R==1)*(g_len_L==1)*same_ts_0
             
+            #This is a group if they are aligned AND this isn't a merge AND they are pure AND are the same GT group
             wasGroup = bothTarged*((g_len_L>1)+(g_len_R>1)+~same_ts_0)*bothPure*same_GTGroups
+            #This is not a group if they arn't aligned OR (this isn't a merge AND they are pure but they belong to different GT groups)
             wasNoGroup = badTarged+(bothTarged*((g_len_L>1)+(g_len_R>1)+~same_ts_0)*bothPure*~same_GTGroups)
 
+            #The error occurs when something is impure (bad merge or group)
             wasError = bothTarged*((purity_R<1)+(purity_L<1))
             wasNoError = bothTarged*~((purity_R<1)+(purity_L<1))
 

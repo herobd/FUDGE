@@ -3,7 +3,6 @@
 
 This is the code for our ICDAR 2021 paper "Visual FUDGE: Form Understanding via Dynamic Graph Editing" (http://arxiv.org/abs/2105.08194)
 
-This is still getting cleaned up and tweaked. This README is not up to date. I'll probably be done in about a month.
 
 This code is licensed under GNU GPL v3. If you would like it distributed to you under a different license, please contact me (briandavis@byu.net).
 
@@ -14,30 +13,30 @@ This code is licensed under GNU GPL v3. If you would like it distributed to you 
 * scikit-image
 * pytorch-geometric https://pytorch-geometric.readthedocs.io/en/latest/notes/installation.html
 
-## Model weights
+## Pre-trained Model weights
 
-Eventually I'll get the weights added as a release.
+See "Releases"
 
 
 ## Reproducability instructions
 
 
-### Datasets
+### Getting the datasets
 NAF see https://github.com/herobd/NAF_dataset
 
 FUNSD see https://guillaumejaume.github.io/FUNSD/
 
 The configs expect the datasets to be at `../data/NAF_dataset/` and `../data/FUNSD/`
 
-### Pretraining the detector network
+### Pretraining the detector networks
 FUNSD: `python train.py -c configs/cf_FUNSDLines_detect_augR_staggerLighter.json`
 
 NAF: `python train.py -c configs/cf_NAF_detect_augR_staggerLighter.json`
 
-### Training the full network
+### Training the full networks
 FUNSD: `python train.py -c cf_FUNSDLines_pair_graph663rv_new.json`
 
-Word-FUDGE: `python train.py -c cf_FUNSDWords_pair_graph663rv_new.json`
+Word-FUDGE: `python train.py -c cf_FUNSDWords_pair_graph663rv_new.json` [ACTUALLY, THERE WAS AN ERROR IN MY ORIGINAL EVAL. NEW RESULTS FORTHCOMING (for Word-FUDGE)]
 
 NAF: `python train.py -c cf_NAF_pair_graph663rv_new.json`
 
@@ -108,11 +107,15 @@ Evaluatring pairing:
 * `-a draw_verbosity=0-3`: Different ways of displaying the results.
 
 ## File Structure
+This code is based on based on victoresque's pytorch template.
+
   ```
   
   │
   ├── train.py - Training script
   ├── eval.py - Evaluation and display script
+  │
+  ├── configs/ - where the config files are
   │
   ├── base/ - abstract base classes
   │   ├── base_data_loader.py - abstract base class for data loaders
@@ -123,11 +126,12 @@ Evaluatring pairing:
   │   └── data_loaders.py - This provides access to all the dataset objects
   │
   ├── datasets/ - default datasets folder
-  │   ├── box_detect.py - base class for detection
+  │   ├── box_detect.py - base class for detection datasets
   │   ├── forms_box_detect.py - detection for NAF dataset
-  │   ├── forms_feature_pair.py - dataset for training non-visual classifier
-  │   ├── graph_pair.py - base class for pairing
-  │   ├── forms_graph_pair.py - pairing for NAD dataset
+  │   ├── funsd_box_detect.py - detection for FUNSD dataset
+  │   ├── graph_pair.py - base class for pairing datasets
+  │   ├── forms_graph_pair.py - pairing for NAF dataset
+  │   ├── funsd_graph_pair.py - pairing for NAF dataset
   │   └── test*.py - scripts to test the datasets and display the images for visual inspection
   │
   ├── logger/ - for training process logging
@@ -150,13 +154,22 @@ Evaluatring pairing:
   │
   ├── trainer/ - trainers
   │   ├── box_detect_trainer.py - detector training code
-  │   ├── feature_pair_trainer.py - non-visual pairing training code
-  │   ├── graph_pair_trainer.py - pairing training code
-  │   └── trainer.py
+  │   └── graph_pair_trainer.py - pairing training code
+  │
+  ├── evaluators/ - used to evaluate the models
+  │   ├── draw_graph.py - draws the predictions onto the image
+  │   ├── funsdboxdetect_eval.py - for detectors
+  │   └── funsdgraphpair_eval.py - for pairing networks
   │
   └── utils/
       ├── util.py
-      └── ...
+      ├── augmentation.py - coloring and contrans augmentation
+      ├── crop_transform.py - handles random croping, especially tracking which text is cropped
+      ├── forms_annotations.py - functions for processing NAF dataset
+      ├── funsd_annotations.py - functions for processing FUNSD dataset
+      ├── group_pairing.py - helper functions dealing with groupings
+      ├── img_f.py - I originally used OpenCV, but was running into issues with the Anaconda installation. This wraps SciKit Image with OpenCV function signatures.
+      └── yolo_tools.py - Non-maximal supression and pred-to-GT aligning functions
   ```
 
 ### Config file format
@@ -312,11 +325,11 @@ The config file is saved in the same folder. (as a reference only, the config is
   ```python
   {
     'arch': arch,
-    'epoch': epoch,
+    'iteration': iteration,
     'logger': self.train_logger,
     'state_dict': self.model.state_dict(),
+    'swa_state_dict': self.swa_model.state_dict(),
     'optimizer': self.optimizer.state_dict(),
-    'monitor_best': self.monitor_best,
     'config': self.config
   }
   ```
