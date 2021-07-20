@@ -27,14 +27,8 @@ class GraphPairDataset(torch.utils.data.Dataset):
 
 
     def __init__(self, dirPath=None, split=None, config=None, images=None):
-        #if 'augmentation_params' in config['data_loader']:
-        #    self.augmentation_params=config['augmentation_params']
-        #else:
-        #    self.augmentation_params=None
-        self.questions = config['questions'] if 'questions' in config else False
         self.color = config['color'] if 'color' in config else True
         self.rotate = config['rotation'] if 'rotation' in config else False
-        #patchSize=config['patch_size']
         if 'crop_params' in config and config['crop_params'] is not None:
             self.transform = CropBoxTransform(config['crop_params'],self.rotate)
         else:
@@ -67,16 +61,14 @@ class GraphPairDataset(torch.utils.data.Dataset):
     def __getitem__(self,index):
         return self.getitem(index)
     def getitem(self,index,scaleP=None,cropPoint=None):
-        ##ticFull=timeit.default_timer()
         imagePath = self.images[index]['imagePath']
         imageName = self.images[index]['imageName']
         annotationPath = self.images[index]['annotationPath']
-        #print(annotationPath)
         rescaled = self.images[index]['rescaled']
         with open(annotationPath) as annFile:
             annotations = json.loads(annFile.read())
-
-        ##tic=timeit.default_timer()
+    
+        #Read image
         np_img = img_f.imread(imagePath, 1 if self.color else 0)#*255.0
         if np_img.max()<200:
             np_img*=255
@@ -105,8 +97,6 @@ class GraphPairDataset(torch.utils.data.Dataset):
 
         
         
-        ##tic=timeit.default_timer()
-        #np_img = img_f.resize(np_img,(target_dim1, target_dim0))
         np_img = img_f.resize(np_img,(0,0),
                 fx=partial_rescale,
                 fy=partial_rescale,
@@ -115,64 +105,10 @@ class GraphPairDataset(torch.utils.data.Dataset):
             np_img=np_img[...,None] #add 'color' channel
         if self.color and np_img.shape[2]==1:
             np_img = np.repeat(np_img,3,axis=2)
-        ##print('resize: {}  [{}, {}]'.format(timeit.default_timer()-tic,np_img.shape[0],np_img.shape[1]))
-        
-        ##tic=timeit.default_timer()
 
         bbs,ids,numClasses,trans, groups, metadata, form_metadata = self.parseAnn(annotations,s)
-        #trans = {i:v for i,v in enumerate(trans)}
-        #metadata = {i:v for i,v in enumerate(metadata)}
-
-        #start_of_line, end_of_line = getStartEndGT(annotations['byId'].values(),s)
-        #Try:
-        #    table_points, table_pixels = self.getTables(
-        #            fieldBBs,
-        #            s, 
-        #            np_img.shape[0], 
-        #            np_img.shape[1],
-        #            annotations['samePairs'])
-        #Except Exception as inst:
-        #    if imageName not in self.errors:
-        #        table_points=None
-        #        table_pixels=None
-        #        print(inst)
-        #        print('Table error on: '+imagePath)
-        #        self.errors.append(imageName)
 
 
-        #pixel_gt = table_pixels
-
-        ##ticTr=timeit.default_timer()
-        if self.questions: #we need to do questions before crop to have full context
-            #we have to relationships to get questions
-            pairs=set()
-            for index1,id in enumerate(ids): #updated
-                responseBBIdList = self.getResponseBBIdList(id,annotations)
-                for bbId in responseBBIdList:
-                    try:
-                        index2 = ids.index(bbId)
-                        pairs.add((min(index1,index2),max(index1,index2)))
-                    except ValueError:
-                        pass
-            groups_adj = set()
-            if groups is not None:
-                for n0,n1 in pairs:
-                    g0=-1
-                    g1=-1
-                    for i,ns in enumerate(groups):
-                        if n0 in ns:
-                            g0=i
-                            if g1!=-1:
-                                break
-                        if n1 in ns:
-                            g1=i
-                            if g0!=-1:
-                                break
-                    if g0!=g1:
-                        groups_adj.add((min(g0,g1),max(g0,g1)))
-            questions_and_answers = self.makeQuestions(bbs,trans,groups,groups_adj)
-        else:
-            questions_and_answers=None
 
         if self.transform is not None:
             if 'word_boxes' in form_metadata:
@@ -185,20 +121,12 @@ class GraphPairDataset(torch.utils.data.Dataset):
             else:
                 crop_bbs = bbs
                 crop_ids = ids
+
+            #This will do crop augmentation
             out, cropPoint = self.transform({
                 "img": np_img,
                 "bb_gt": crop_bbs,
                 'bb_auxs':crop_ids,
-                #'word_bbs':form_metadata['word_boxes'] if 'word_boxes' in form_metadata else None
-                #"line_gt": {
-                #    "start_of_line": start_of_line,
-                #    "end_of_line": end_of_line
-                #    },
-                #"point_gt": {
-                #        "table_points": table_points
-                #        },
-                #"pixel_gt": pixel_gt,
-                
             }, cropPoint)
             np_img = out['img']
 
@@ -221,40 +149,21 @@ class GraphPairDataset(torch.utils.data.Dataset):
                 bbs = out['bb_gt']
                 ids= out['bb_auxs'] 
 
-            if questions_and_answers is not None:
-                questions=[]
-                answers=[]
-                questions_and_answers = [(q,a,qids) for q,a,qids in questions_and_answers if all((i in ids) for i in qids)]
-        if questions_and_answers is not None:
-            if len(questions_and_answers) > self.questions:
-                questions_and_answers = random.sample(questions_and_answers,k=self.questions)
-            if len(questions_and_answers)>0:
-                questions,answers,_ = zip(*questions_and_answers)
-            else:
-                return self.getitem((index+1)%len(self))
-        else:
-            questions=answers=None
-
-
-
-
-            ##tic=timeit.default_timer()
             if np_img.shape[2]==3:
                 np_img = augmentation.apply_random_color_rotation(np_img)
                 np_img = augmentation.apply_tensmeyer_brightness(np_img,**self.aug_params)
             else:
                 np_img = augmentation.apply_tensmeyer_brightness(np_img,**self.aug_params)
-            ##print('augmentation: {}'.format(timeit.default_timer()-tic))
+
+
+
         newGroups = []
         for group in groups:
             newGroup=[ids.index(bbId) for bbId in group if bbId in ids]
             if len(newGroup)>0:
                 newGroups.append(newGroup)
-                #print(len(newGroups)-1,newGroup)
         groups=newGroups
-        ##print('transfrm: {}  [{}, {}]'.format(timeit.default_timer()-ticTr,org_img.shape[0],org_img.shape[1]))
         pairs=set()
-        #import pdb;pdb.set_trace()
         numNeighbors=[0]*len(ids)
         for index1,id in enumerate(ids): #updated
             responseBBIdList = self.getResponseBBIdList(id,annotations)
@@ -266,26 +175,10 @@ class GraphPairDataset(torch.utils.data.Dataset):
                     numNeighbors[index1]+=1
                 except ValueError:
                     pass
-        #ones = torch.ones(len(pairs))
-        #if len(pairs)>0:
-        #    pairs = torch.LongTensor(list(pairs)).t()
-        #else:
-        #    pairs = torch.LongTensor(pairs)
-        #adjMatrix = torch.sparse.FloatTensor(pairs,ones,(len(ids),len(ids))) # This is an upper diagonal matrix as pairings are bi-directional
-
-        #if len(np_img.shape)==2:
-        #    img=np_img[None,None,:,:] #add "color" channel and batch
-        #else:
         img = np_img.transpose([2,0,1])[None,...] #from [row,col,color] to [batch,color,row,col]
         img = img.astype(np.float32)
         img = torch.from_numpy(img)
         img = 1.0 - img / 128.0 #ideally the median value would be 0
-        #if pixel_gt is not None:
-        #    pixel_gt = pixel_gt.transpose([2,0,1])[None,...]
-        #    pixel_gt = torch.from_numpy(pixel_gt)
-
-        #start_of_line = None if start_of_line is None or start_of_line.shape[1] == 0 else torch.from_numpy(start_of_line)
-        #end_of_line = None if end_of_line is None or end_of_line.shape[1] == 0 else torch.from_numpy(end_of_line)
         
         bbs = convertBBs(bbs,self.rotate,numClasses)
         if 'word_boxes' in form_metadata:
@@ -294,8 +187,7 @@ class GraphPairDataset(torch.utils.data.Dataset):
             numNeighbors = torch.tensor(numNeighbors)[None,:] #add batch dim
         else:
             numNeighbors=None
-        #if table_points is not None:
-        #    table_points = None if table_points.shape[1] == 0 else torch.from_numpy(table_points)
+
         groups_adj = set()
         if groups is not None:
             for n0,n1 in pairs:
@@ -335,8 +227,6 @@ class GraphPairDataset(torch.utils.data.Dataset):
                 "gt_groups": groups,
                 "targetIndexToGroup":targetIndexToGroup,
                 "gt_groups_adj": groups_adj,
-                "questions": questions,
-                "answers": answers
                 }
 
 
