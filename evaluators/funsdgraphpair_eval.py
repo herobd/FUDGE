@@ -164,13 +164,10 @@ def FUNSDGraphPair_eval(config,instance, trainer, metrics, outDir=None, startInd
 
 
             if outDir is not None:
-                if gIter==0 and trainer.model.merge_first:
-                    saveName = '{}_gI{}_mergeFirst_recall:{:.2f}_prec:{:.2f}_Fm:{:.2f}'.format(imageName,gIter,float(log['recallMergeFirst_0']),float(log['precMergeFirst_0']),float(log['FmMergeFirst_0']))
-                else:
-                    saveName = '{}_gI{}_Fms_edge:{:.2f}_rel:{:.2f}_merge:{:.2f}_group:{:.2f}'.format(imageName,gIter,float(log['FmEdge_{}'.format(gIter)]),float(log['FmRel_{}'.format(gIter)]),float(log['FmOverSeg_{}'.format(gIter)]),float(log['FmGroup_{}'.format(gIter)]))
+                saveName = '{}_gI{}_Fms_edge:{:.2f}_rel:{:.2f}_merge:{:.2f}_group:{:.2f}'.format(imageName,gIter,float(log['FmEdge_{}'.format(gIter)]),float(log['FmRel_{}'.format(gIter)]),float(log['FmOverSeg_{}'.format(gIter)]),float(log['FmGroup_{}'.format(gIter)]))
 
                 path = os.path.join(outDir,saveName+'.png')
-                draw_graph(outputBoxes,trainer.model.used_threshConf,bbPred.cpu().detach() if bbPred is not None else None,torch.sigmoid(edgePred).cpu().detach(),relIndexes,predGroups,data,edgePredTypes,missedRels,None,targetBoxes,trainer.classMap,path,useTextLines=trainer.model.useCurvedBBs,targetGroups=instance['gt_groups'],targetPairs=instance['gt_groups_adj'],verbosity=draw_verbosity,bbAlignment=out['allBBAlignment'][gIter])
+                draw_graph(outputBoxes,bbPred.cpu().detach() if bbPred is not None else None,torch.sigmoid(edgePred).cpu().detach(),relIndexes,predGroups,data,edgePredTypes,missedRels,None,targetBoxes,path,useTextLines=False,targetGroups=instance['gt_groups'],targetPairs=instance['gt_groups_adj'],verbosity=draw_verbosity,bbAlignment=out['allBBAlignment'][gIter])
 
     if outDir is not None:
         if 'final_rel_Fm' in log:
@@ -179,7 +176,7 @@ def FUNSDGraphPair_eval(config,instance, trainer, metrics, outDir=None, startInd
             path = os.path.join(outDir,'{}_relFm:{:.2}_r+p:{:.2}+{:.2}_EDFm:{:.2}_r+p:{:.2}+{:.2}.png'.format(imageName,float(log['final_rel_BROS_F']),float(log['final_rel_BROS_recall']),float(log['final_rel_BROS_prec']),float(log['ED_F1']),float(log['ED_recall']),float(log['ED_prec'])))
 
         finalOutputBoxes, finalPredGroups, finalEdgeIndexes, finalBBTrans = out['final']
-        draw_graph(finalOutputBoxes,trainer.model.used_threshConf,None,None,finalEdgeIndexes,finalPredGroups,data,out['final_edgePredTypes'],out['final_missedRels'],out['final_missedGroups'],targetBoxes,trainer.classMap,path,bbTrans=finalBBTrans,useTextLines=trainer.model.useCurvedBBs,targetGroups=instance['gt_groups'],targetPairs=instance['gt_groups_adj'],verbosity=draw_verbosity)
+        draw_graph(finalOutputBoxes,None,None,finalEdgeIndexes,finalPredGroups,data,out['final_edgePredTypes'],out['final_missedRels'],out['final_missedGroups'],targetBoxes,path,bbTrans=finalBBTrans,useTextLines=False,targetGroups=instance['gt_groups'],targetPairs=instance['gt_groups_adj'],verbosity=draw_verbosity)
 
     for key in losses.keys():
         losses[key] = losses[key].item()

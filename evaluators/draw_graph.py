@@ -33,7 +33,7 @@ def plotRect(img,color,xyrhw,lineWidth=1):
     img_f.line(img,bl,tl,color,lineWidth)
 
 
-def draw_graph(outputBoxes,bb_thresh,nodePred,edgePred,edgeIndexes,predGroups,image,predTypes,missedRels,missedGroups,targetBoxes,classMap,path,verbosity=2,bbTrans=None,useTextLines=False,targetGroups=None,targetPairs=None,bbAlignment=None):
+def draw_graph(outputBoxes,nodePred,edgePred,edgeIndexes,predGroups,image,predTypes,missedRels,missedGroups,targetBoxes,path,verbosity=2,bbTrans=None,useTextLines=False,targetGroups=None,targetPairs=None,bbAlignment=None):
     #for graphIteration,(outputBoxes,nodePred,edgePred,edgeIndexes,predGroups) in zip(allOutputBoxes,allNodePred,allEdgePred,allEdgeIndexes,allPredGroups):
         if bbTrans is not None:
             transPath = path[:-3]+'txt'
@@ -78,7 +78,7 @@ def draw_graph(outputBoxes,bb_thresh,nodePred,edgePred,edgeIndexes,predGroups,im
             #for pair in targetPairs:
             #if len(predTypes)==1:
             #    print('num missing: {}'.format(len(missedRels)))
-        if verbosity>0:
+        if verbosity>0 and missedRels is not None:
             for pair in missedRels:
                 img_f.line(image,groupCenters[pair[0]],groupCenters[pair[1]],(1,0,0.1),3,draw='mult')
                     #if len(predTypes)==1:
@@ -86,103 +86,6 @@ def draw_graph(outputBoxes,bb_thresh,nodePred,edgePred,edgeIndexes,predGroups,im
 
         to_write_text=[]
         bbs = outputBoxes
-        numClasses=len(classMap)
-        if 'blank' in classMap:
-            blank=True
-            numClasses-=1
-            for cls,idx in classMap.items():
-                if cls!='blank':
-                    assert(idx<classMap['blank'])
-        else:
-            blank=False
-        #if verbosity>0 and outputBoxes is not None:
-        #    #Draw pred bbs
-        #    for j in range(len(bbs)):
-        #        #circle aligned predictions
-        #        if useTextLines:
-        #            conf = bbs[j].getConf()
-        #            maxIndex = np.argmax(bbs[j].getCls()[:numClasses])
-        #            if 'gI0' in path:
-        #                assert(len(bbs[j].all_primitive_rects)==1)
-        #            if blank:
-        #                is_blank = bbs[j].getCls()[-1]>0.5
-        #        else:
-        #            conf = bbs[j,0]
-        #            maxIndex =np.argmax(bbs[j,6:6+numClasses])
-        #            if blank:
-        #                is_blank = bbs[j,-1]>0.5
-        #        shade = conf#(conf-bb_thresh)/(1-bb_thresh)
-        #        #print(shade)
-        #        #if name=='text_start_gt' or name=='field_end_gt':
-        #        #    img_f.bb(bbImage[:,:,1],p1,p2,shade,2)
-        #        #if name=='text_end_gt':
-        #        #    img_f.bb(bbImage[:,:,2],p1,p2,shade,2)
-        #        #elif name=='field_end_gt' or name=='field_start_gt':
-        #        #    img_f.bb(bbImage[:,:,0],p1,p2,shade,2)
-        #        if maxIndex==0:
-        #            color=(0,0,shade) #header
-        #        elif maxIndex==1:
-        #            color=(0,shade,shade) #question
-        #        elif maxIndex==2:
-        #            color=(shade,shade,0) #answer
-        #        elif maxIndex==3:
-        #            color=(shade,0,shade) #other
-        #        else:
-        #            raise NotImplementedError('Only 4 colors/classes implemented for drawing')
-        #        lineWidth=1
-        #        
-        #        if useTextLines:
-        #            pts = bbs[j].polyPoints()
-        #            pts = pts.reshape((-1,1,2))
-        #            if verbosity<3 or bbAlignment[j].item()!=-1:
-        #                fill = 'transparent'
-        #            else:
-        #                fill = False
-        #            img_f.polylines(image,pts.astype(np.int),fill,color,lineWidth)
-        #            x,y = bbs[j].getCenterPoint()
-        #            x=int(x)
-        #            y=int(y)
-        #        else:
-        #            plotRect(image,color,bbs[j,1:6],lineWidth)
-        #            x=int(bbs[j,1])
-        #            y=int(bbs[j,2])
-
-        #        if blank and is_blank:
-        #            #draw a B at center of box
-        #            if x-4<0:
-        #                x=4
-        #            if y-4<0:
-        #                y=4
-        #            if x+4>=image.shape[1]:
-        #                x=image.shape[1]-5
-        #            if y+4>=image.shape[0]:
-        #                y=image.shape[0]-5
-        #            image[y-2:y+3,x-1]=color
-        #            image[y-2,x]=color
-        #            image[y-1,x+1]=color
-        #            image[y,x]=color
-        #            image[y+1,x+1]=color
-        #            image[y+2,x]=color
-
-        #            image[y-4:y+5,x-4]=color
-        #            image[y-4:y+5,x+4]=color
-        #            image[y-4,x-4:x+5]=color
-        #            image[y+4,x-4:x+5]=color
-
-
-        #        #if verbosity>3 and predNN is not None:
-        #        #    targ_j = bbAlignment[j].item()
-        #        #    if targ_j>=0:
-        #        #        gtNN = target_num_neighbors[0,targ_j].item()
-        #        #    else:
-        #        #        gtNN = 0
-        #        #    pred_nn = predNN[j].item()
-        #        #    color2 = min(abs(pred_nn-gtNN),1)#*0.5
-        #        #    img_f.putText(image,'{:.2}/{}'.format(pred_nn,gtNN),(x,y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,(color2,0,0),2,cv2.LINE_AA)
-        #        #if bbTrans is not None:
-        #        #    to_write_text.append(('{}'.format(j),(int(x),int(y)),(int(round(color[0]*255)),int(round(color[1]*255)),int(round(color[2]*255)))))
-        #        #    #img_f.putText(image,'{}'.format(j),(x,y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,color,2,cv2.LINE_AA)
-        #        #    transOut.write('{}: {}\n'.format(j,bbTrans[j]))
         if bbTrans is not None:
             transOut.close()
             if len(to_write_text)>0:
@@ -217,24 +120,13 @@ def draw_graph(outputBoxes,bb_thresh,nodePred,edgePred,edgeIndexes,predGroups,im
             for j in group:
                 if useTextLines:
                     conf = bbs[j].getConf()
-                    maxIndex = np.argmax(bbs[j].getCls()[:numClasses])
+                    maxIndex = np.argmax(bbs[j].getCls())
                     if 'gI0' in path:
                         assert(len(bbs[j].all_primitive_rects)==1)
-                    if blank:
-                        is_blank = bbs[j].getCls()[-1]>0.5
                 else:
                     conf = bbs[j,0]
-                    maxIndex =np.argmax(bbs[j,6:6+numClasses])
-                    if blank:
-                        is_blank = bbs[j,-1]>0.5
+                    maxIndex =np.argmax(bbs[j,6:])
                 shade = conf#(conf-bb_thresh)/(1-bb_thresh)
-                #print(shade)
-                #if name=='text_start_gt' or name=='field_end_gt':
-                #    img_f.bb(bbImage[:,:,1],p1,p2,shade,2)
-                #if name=='text_end_gt':
-                #    img_f.bb(bbImage[:,:,2],p1,p2,shade,2)
-                #elif name=='field_end_gt' or name=='field_start_gt':
-                #    img_f.bb(bbImage[:,:,0],p1,p2,shade,2)
                 if maxIndex==0:
                     color=(0,0,shade) #header
                 elif maxIndex==1:
@@ -264,27 +156,6 @@ def draw_graph(outputBoxes,bb_thresh,nodePred,edgePred,edgeIndexes,predGroups,im
                         x=int(bbs[j,1])
                         y=int(bbs[j,2])
 
-                    if blank and is_blank:
-                        #draw a B at center of box
-                        if x-4<0:
-                            x=4
-                        if y-4<0:
-                            y=4
-                        if x+4>=image.shape[1]:
-                            x=image.shape[1]-5
-                        if y+4>=image.shape[0]:
-                            y=image.shape[0]-5
-                        image[y-2:y+3,x-1]=color
-                        image[y-2,x]=color
-                        image[y-1,x+1]=color
-                        image[y,x]=color
-                        image[y+1,x+1]=color
-                        image[y+2,x]=color
-
-                        image[y-4:y+5,x-4]=color
-                        image[y-4:y+5,x+4]=color
-                        image[y-4,x-4:x+5]=color
-                        image[y+4,x-4:x+5]=color
                 if useTextLines:
                     pts = outputBoxes[j].polyPoints()
                     for pt in pts:
@@ -453,11 +324,7 @@ def draw_graph(outputBoxes,bb_thresh,nodePred,edgePred,edgeIndexes,predGroups,im
                     if verbosity>1:
                         plotRect(image,(1,0.5,0),targetBoxes[0,bbi,0:5])
                     tr,tl,br,bl=getCorners(targetBoxes[0,bbi,0:5])
-                    cls = targetBoxes[0,bbi,13:13+numClasses].argmax().item()
-                    #image[tl[1]:tl[1]+2,tl[0]:tl[0]+2]=idColor
-                    #image[tr[1]:tr[1]+1,tr[0]:tr[0]+1]=idColor
-                    #image[bl[1]:bl[1]+1,bl[0]:bl[0]+1]=idColor
-                    #image[br[1]:br[1]+1,br[0]:br[0]+1]=idColor
+                    cls = targetBoxes[0,bbi,13:].argmax().item()
                     maxX=max(maxX,tr[0],tl[0],br[0],bl[0])
                     minX=min(minX,tr[0],tl[0],br[0],bl[0])
                     maxY=max(maxY,tr[1],tl[1],br[1],bl[1])

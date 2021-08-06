@@ -1102,7 +1102,6 @@ class GraphPairTrainer(BaseTrainer):
                     
                     draw_graph(
                             outputBoxes,
-                            self.model_ref.used_threshConf,
                             torch.sigmoid(nodePred).cpu().detach() if nodePred is not None else None,
                             torch.sigmoid(edgePred).cpu().detach() if edgePred is not None else None,
                             edgeIndexes,
@@ -1112,7 +1111,6 @@ class GraphPairTrainer(BaseTrainer):
                             missedRels,
                             None,
                             targetBoxes,
-                            self.classMap,
                             path,
                             useTextLines=False,
                             targetGroups=instance['gt_groups'],
@@ -1233,7 +1231,6 @@ class GraphPairTrainer(BaseTrainer):
                 finalOutputBoxes, finalPredGroups, finalEdgeIndexes, finalBBTrans = final
                 draw_graph(
                         finalOutputBoxes,
-                        self.model_ref.used_threshConf,
                         None,
                         None,
                         finalEdgeIndexes,
@@ -1243,7 +1240,6 @@ class GraphPairTrainer(BaseTrainer):
                         finalMissedRels,
                         finalMissedGroups,
                         targetBoxes,
-                        self.classMap,
                         path,
                         bbTrans=finalBBTrans,
                         useTextLines=False,

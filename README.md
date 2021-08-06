@@ -106,6 +106,16 @@ Evaluatring pairing:
 * `-a gtGroups=True`: Force use of GT groupings (for DocStruct comparison)
 * `-a draw_verbosity=0-3`: Different ways of displaying the results.
 
+
+### run.py
+
+This will run a model on a single input image and them produce an annotated image.
+
+Usage: `python run.py input/image.png output.png -c path/to/checkpoint.pth`
+
+If running the NAF model, you'll also want to include the argument `--scale-image 0.52` to resize the image appropriately.
+If you run a detection model, add the `-d` flag (note: it won't perform non-maximal suppression when doing this).
+
 ## File Structure
 This code is based on based on victoresque's pytorch template.
 
