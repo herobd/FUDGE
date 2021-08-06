@@ -15,7 +15,7 @@ This code is licensed under GNU GPL v3. If you would like it distributed to you 
 
 ## Pre-trained Model weights
 
-See "Releases"
+See `pretrained.tar.gz` in "Releases"
 
 
 ## Reproducability instructions
@@ -34,11 +34,11 @@ FUNSD: `python train.py -c configs/cf_FUNSDLines_detect_augR_staggerLighter.json
 NAF: `python train.py -c configs/cf_NAF_detect_augR_staggerLighter.json`
 
 ### Training the full networks
-FUNSD: `python train.py -c cf_FUNSDLines_pair_graph663rv_new.json`
+FUNSD: `python train.py -c configs/cf_FUNSDLines_pair_graph663rv_new.json`
 
-Word-FUDGE: `python train.py -c cf_FUNSDWords_pair_graph663rv_new.json` [ACTUALLY, THERE WAS AN ERROR IN MY ORIGINAL EVAL. NEW RESULTS FORTHCOMING (for Word-FUDGE)]
+Word-FUDGE: `python train.py -c configs/cf_FUNSDLinesAndWords_pair_graph663rv_new.json` 
 
-NAF: `python train.py -c cf_NAF_pair_graph663rv_new.json`
+NAF: `python train.py -c configs/cf_NAF_pair_graph663rv_new.json`
 
 The ablation uses the following configs:
 * cf_FUNSDLines_pair_binary333rv_new.json
@@ -50,7 +50,7 @@ The ablation uses the following configs:
 #### Wait, how long does this take to train?
 If trained to the full 700,000 iterations, it takes a couple weeks, depending on your GPU. I used a batch size of 1 due to hardware limitations. I also hard-coded the batch size of 1, so you have to as well (GCNs handle batches specially and I didn't want to code that up).
 
-However, from an experiment I ran, I think you can get the same results with only 250,000 iterations by accumulating the gradient to pretend a batch size of 5. This is done by adding `"accum_grad_steps": 5` to `trainer` in the config json. Yes, that means it only updates the weights 50,000 times.
+However, from an experiment I ran, I think you can get the same results with only 250,000 iterations by accumulating the gradient to pretend a batch size of 5. This is done by adding `"accum_grad_steps": 5` to `trainer` in the config json. Yes, that means it only updates the weights 50,000 times. It never hurts to train a bit more, it doesn't overfit in my experience.
 
 ### Evaluating
 
