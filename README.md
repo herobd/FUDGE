@@ -1,8 +1,11 @@
 # Visual FUDGE: 
 # Form Understanding via Dynamic Graph Editing
 
+<img src="logo.png" width="150" height="150" />
+
 This is the code for our ICDAR 2021 paper "Visual FUDGE: Form Understanding via Dynamic Graph Editing" (http://arxiv.org/abs/2105.08194)
 
+<img src="FUNSD_example.png" alt="FUNSD result"  width="425"/> <img src="NAF_example.png" alt="NAF result" width="425"/> 
 
 This code is licensed under GNU GPL v3. If you would like it distributed to you under a different license, please contact me (briandavis@byu.net).
 
