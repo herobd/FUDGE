@@ -5,6 +5,8 @@
 
 This is the code for our ICDAR 2021 paper "Visual FUDGE: Form Understanding via Dynamic Graph Editing" (http://arxiv.org/abs/2105.08194)
 
+Video: https://youtu.be/dUZvm8MP-58
+
 This code is licensed under GNU GPL v3. If you would like it distributed to you under a different license, please contact me (briandavis@byu.net).
 
 <img src="FUNSD_example.png" alt="FUNSD result"  width="410"/> <img src="NAF_example.png" alt="NAF result" width="410"/> 
