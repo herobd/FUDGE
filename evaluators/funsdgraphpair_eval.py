@@ -178,6 +178,49 @@ def FUNSDGraphPair_eval(config,instance, trainer, metrics, outDir=None, startInd
         finalOutputBoxes, finalPredGroups, finalEdgeIndexes, finalBBTrans = out['final']
         draw_graph(finalOutputBoxes,None,None,finalEdgeIndexes,finalPredGroups,data,out['final_edgePredTypes'],out['final_missedRels'],out['final_missedGroups'],targetBoxes,path,bbTrans=finalBBTrans,useTextLines=False,targetGroups=instance['gt_groups'],targetPairs=instance['gt_groups_adj'],verbosity=draw_verbosity)
 
+    ############
+    ##NEW##
+
+    classes=['header','question','answer','other']
+
+    finalOutputBoxes, finalPredGroups, finalEdgeIndexes, finalBBTrans = out['final']
+    pred_entities=[]
+    for group in finalPredGroups:
+        clsVotes = defaultdict(int)
+        lines
+        for lineID in group:
+            maxIndex =np.argmax(finalOutputBoxes[lineID,6:6+numClasses])
+            cls = classes[maxIndex]
+            clsVotes.append(cls)
+            tl,tr,br,bl=getCorners(finalOutputBoxes[lineID,1:6])
+
+            lines.append({
+                'corners':[tl,tr,br,bl],
+                'gt_text': finalBBTrans[line_id]
+                })
+
+        best_cls=None
+        best_votes=0
+        for cls,votes in clsVotes.items():
+            if votes>best_votes:
+                best_votes=votes
+                best_cls=cls
+
+        pred_entities.append({
+            'class':cls,
+            'lines': lines
+            })
+
+    #links=[]
+    #for a,b
+
+    predictions={
+            'entities':pred_entities,
+            'links': finalEdgeIndexes
+            }
+
+    ########
+
     for key in losses.keys():
         losses[key] = losses[key].item()
 
@@ -206,7 +249,7 @@ def FUNSDGraphPair_eval(config,instance, trainer, metrics, outDir=None, startInd
                 retData[key]=[value]
     return (
              retData,
-             None
+             predictions
             )
 
 
